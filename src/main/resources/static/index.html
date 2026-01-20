@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Flink Job Control</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="css/style.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.45.0/min/vs/loader.min.js"></script>
+    <style>
+        .header-actions {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .btn-secondary.small {
+            padding: 0.25rem 0.75rem;
+            font-size: 0.85rem;
+        }
+
+        /* Checkbox & Radio Styles */
+        .checkbox-container,
+        .radio-container {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            cursor: pointer;
+            user-select: none;
+            margin-bottom: 0.5rem;
+        }
+
+        .checkbox-container input,
+        .radio-container input {
+            cursor: pointer;
+            width: auto;
+            margin: 0;
+        }
+
+        .radio-group {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+            margin-top: 0.5rem;
+        }
+
+        .watermark-options {
+            padding-left: 1.5rem;
+            border-left: 2px solid var(--border);
+            margin-top: 0.5rem;
+            margin-bottom: 1rem;
+        }
+    </style>
+</head>
+
+<body class="dark-theme">
+    <div class="app-container">
+        <header>
+            <div class="logo">
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M12 2L2 7L12 12L22 7L12 2Z" stroke="var(--primary)" stroke-width="2" stroke-linecap="round"
+                        stroke-linejoin="round" />
+                    <path d="M2 17L12 22L22 17" stroke="var(--primary)" stroke-width="2" stroke-linecap="round"
+                        stroke-linejoin="round" />
+                    <path d="M2 12L12 17L22 12" stroke="var(--primary)" stroke-width="2" stroke-linecap="round"
+                        stroke-linejoin="round" />
+                </svg>
+                <h1>Flink Control</h1>
+            </div>
+            <div class="header-actions">
+                <input type="file" id="configLoader" accept=".json" style="display: none;">
+                <button class="btn-secondary small" onclick="document.getElementById('configLoader').click()">
+                    Load Config
+                </button>
+                <div class="status-indicator">
+                    <span class="dot"></span>
+                    System Ready
+                </div>
+            </div>
+        </header>
+
+        <div class="layout-grid">
+            <main>
+                <form id="jobForm" class="glass-panel">
+                    <section class="form-section">
+                        <h2>Job Configuration</h2>
+                        <div class="form-group">
+                            <label for="jobName">Job Name</label>
+                            <input type="text" id="jobName" name="jobName" placeholder="e.g., fraudulent-txn-detector"
+                                required>
+                        </div>
+
+                        <div class="form-row">
+                            <div class="form-group half">
+                                <label for="parallelism">Parallelism</label>
+                                <input type="number" id="parallelism" name="parallelism" value="1" min="1">
+                            </div>
+                            <div class="form-group half">
+                                <label for="checkpointInterval">Checkpoint Interval (ms)</label>
+                                <input type="number" id="checkpointInterval" name="checkpointInterval" value="60000"
+                                    step="1000">
+                            </div>
+                        </div>
+                    </section>
+
+                    <div class="grid-2">
+                        <section class="form-section">
+                            <h2>Source (Kafka)</h2>
+                            <div class="form-group">
+                                <label for="sourceBootstrapServers">Bootstrap Servers</label>
+                                <input type="text" id="sourceBootstrapServers" name="sourceBootstrapServers"
+                                    placeholder="localhost:9092" required>
+                            </div>
+                            <div class="form-group">
+                                <label for="sourceTopic">Topic</label>
+                                <input type="text" id="sourceTopic" name="sourceTopic" placeholder="input-topic"
+                                    required>
+                            </div>
+                            <div class="form-group">
+                                <label for="sourceGroupId">Group ID</label>
+                                <input type="text" id="sourceGroupId" name="sourceGroupId" placeholder="flink-group-1">
+                            </div>
+
+                            <div class="form-group">
+                                <label for="sourceStartingOffset">Starting Offset</label>
+                                <select id="sourceStartingOffset" name="sourceStartingOffset">
+                                    <option value="EARLIEST">Earliest</option>
+                                    <option value="LATEST">Latest</option>
+                                    <option value="GROUP_OFFSETS">Group Offsets (Committed)</option>
+                                    <option value="TIMESTAMP">Timestamp</option>
+                                </select>
+                            </div>
+                            <div class="form-group hidden" id="offsetTimestampGroup">
+                                <label for="sourceStartingOffsetTimestamp">Offset Timestamp (Unix ms)</label>
+                                <input type="number" id="sourceStartingOffsetTimestamp"
+                                    name="sourceStartingOffsetTimestamp" placeholder="e.g. 1678886400000">
+                            </div>
+
+                            <div class="form-group">
+                                <label for="sourceTableName">Source Table Name</label>
+                                <input type="text" id="sourceTableName" name="sourceTableName"
+                                    placeholder="source_table">
+                            </div>
+
+                            <!-- Schema -->
+                            <div class="form-group">
+                                <label for="sourceSchema" id="source-schema-label">Data Schema (JSON Schema):</label>
+                                <textarea id="sourceSchema" name="sourceSchema"
+                                    placeholder='e.g. { "type": "object", "properties": { "id": {"type": "integer"} } }'></textarea>
+                                <small>Optional. Used for validation.</small>
+                                <div class="file-upload-wrapper mt-2">
+                                    <small class="hint">Upload schema file or paste above</small>
+                                </div>
+                            </div>
+
+                            <!-- Watermark Configuration -->
+                            <div class="form-group custom-checkbox">
+                                <label class="checkbox-container">
+                                    <input type="checkbox" id="enableWatermark" name="enableWatermark">
+                                    <span class="checkmark"></span>
+                                    Enable Watermark Generation
+                                </label>
+                            </div>
+
+                            <div class="watermark-options hidden" id="watermarkOptions">
+                                <div class="form-group radio-group">
+                                    <label class="radio-container">
+                                        <input type="radio" name="watermarkMode" value="PROCESS_TIME" checked>
+                                        <span class="radio-mark"></span>
+                                        <div>
+                                            Process Time (Default)
+                                            <div
+                                                style="font-size: 0.8rem; color: var(--text-secondary); margin-top: 2px;">
+                                                Adds column <code>processed_time</code> for SQL
+                                            </div>
+                                        </div>
+                                    </label>
+                                    <label class="radio-container">
+                                        <input type="radio" name="watermarkMode" value="EXISTING">
+                                        <span class="radio-mark"></span>
+                                        Existing Timestamp Column
+                                    </label>
+                                </div>
+
+                                <div class="form-group hidden" id="watermarkColumnGroup">
+                                    <label for="watermarkColumn">Timestamp Column Name</label>
+                                    <input type="text" id="watermarkColumn" name="watermarkColumn"
+                                        placeholder="e.g. event_time">
+                                </div>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="sourceAuthType">Authentication Protocol</label>
+                                <select id="sourceAuthType" name="sourceAuthType">
+                                    <option value="NONE">None</option>
+                                    <option value="SASL_PLAINTEXT">SASL_PLAINTEXT</option>
+                                    <option value="SASL_SSL">SASL_SSL</option>
+                                </select>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="sourceFormat">Data Format</label>
+                                <select id="sourceFormat" name="sourceFormat">
+                                    <option value="STRING">String</option>
+                                    <option value="JSON">JSON</option>
+                                    <option value="AVRO">Avro</option>
+                                </select>
+                            </div>
+
+                            <div class="form-group auth-field hidden" data-for="sourceAuthType">
+                                <label for="sourceMechanism">SASL Mechanism</label>
+                                <select id="sourceMechanism" name="sourceMechanism">
+                                    <option value="PLAIN">PLAIN</option>
+                                    <option value="SCRAM-SHA-256">SCRAM-SHA-256</option>
+                                </select>
+                            </div>
+                            <div class="form-group auth-field hidden" data-for="sourceAuthType">
+                                <label for="sourceUsername">Username</label>
+                                <input type="text" id="sourceUsername" name="sourceUsername">
+                            </div>
+                            <div class="form-group auth-field hidden" data-for="sourceAuthType">
+                                <label for="sourcePassword">Password</label>
+                                <input type="password" id="sourcePassword" name="sourcePassword">
+                            </div>
+                        </section>
+
+                        <section class="form-section">
+                            <h2>Target (Kafka)</h2>
+                            <div class="form-group">
+                                <label for="targetBootstrapServers">Bootstrap Servers</label>
+                                <input type="text" id="targetBootstrapServers" name="targetBootstrapServers"
+                                    placeholder="localhost:9092" required>
+                            </div>
+                            <div class="form-group">
+                                <label for="targetTopic">Topic</label>
+                                <input type="text" id="targetTopic" name="targetTopic" placeholder="output-topic"
+                                    required>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="targetAuthType">Authentication Type:</label>
+                                <select id="targetAuthType" name="targetAuthType">
+                                    <option value="NONE">None</option>
+                                    <option value="SASL_PLAINTEXT">SASL_PLAINTEXT</option>
+                                    <option value="SASL_SSL">SASL_SSL</option>
+                                </select>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="targetFormat">Data Format:</label>
+                                <select id="targetFormat" name="targetFormat">
+                                    <option value="STRING">String</option>
+                                    <option value="JSON">JSON</option>
+                                    <option value="AVRO">Avro</option>
+                                </select>
+                            </div>
+
+                            <div class="form-group">
+                                <label for="targetSchema">Target Schema (Optional/Required for Avro):</label>
+                                <textarea id="targetSchema" name="targetSchema"
+                                    placeholder='e.g. { "type": "record", "name": "User", "fields": [...] }'></textarea>
+                            </div>
+
+                            <!-- Auth Details (Hidden by default) -->
+                            <div class="form-group auth-field hidden" data-for="targetAuthType">
+                                <label for="targetMechanism">SASL Mechanism</label>
+                                <select id="targetMechanism" name="targetMechanism">
+                                    <option value="PLAIN">PLAIN</option>
+                                    <option value="SCRAM-SHA-256">SCRAM-SHA-256</option>
+                                </select>
+                            </div>
+                            <div class="form-group auth-field hidden" data-for="targetAuthType">
+                                <label for="targetUsername">Username</label>
+                                <input type="text" id="targetUsername" name="targetUsername">
+                            </div>
+                            <div class="form-group auth-field hidden" data-for="targetAuthType">
+                                <label for="targetPassword">Password</label>
+                                <input type="password" id="targetPassword" name="targetPassword">
+                            </div>
+                        </section>
+                    </div>
+
+                    <section class="form-section full-width">
+                        <h2>Transformation Logic (SQL)</h2>
+                        <div class="form-group">
+                            <div class="editor-header">
+                                <label for="sqlQuery">SQL Query</label>
+                                <span class="hint">Use table names from source/target config. Default source table is
+                                    'source_table' or as defined above.</span>
+                            </div>
+                            <textarea id="sqlQuery" name="sqlQuery" rows="10"
+                                placeholder="SELECT * FROM source_table WHERE amount > 1000" required></textarea>
+                        </div>
+                        <div class="form-group">
+                            <label for="resultTableName">Result Table Name</label>
+                            <input type="text" id="resultTableName" name="resultTableName" value="result_view" required>
+                        </div>
+                    </section>
+
+                    <div class="form-actions">
+                        <button type="button" class="btn-secondary" id="validateBtn">
+                            <span class="btn-text">Validate Configuration</span>
+                            <div class="loader hidden"></div>
+                        </button>
+                        <button type="submit" class="btn-primary" id="submitBtn" disabled>
+                            <span class="btn-text">Deploy Job</span>
+                            <div class="loader hidden"></div>
+                        </button>
+                    </div>
+                </form>
+            </main>
+
+            <aside class="sidebar glass-panel">
+                <div class="sidebar-header">
+                    <h3>Validation Logs</h3>
+                    <div class="indicator" id="validationStatus"></div>
+                </div>
+                <div class="log-container" id="logContainer">
+                    <div class="empty-state">No validation logs yet. Run validation to see details.</div>
+                </div>
+            </aside>
+        </div>
+
+        <div id="notification" class="notification hidden">
+            <div class="notification-content"></div>
+        </div>
+    </div>
+
+    <script src="js/app.js"></script>
+</body>
+
+</html>
