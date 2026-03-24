@@ -2,11 +2,140 @@ document.addEventListener('DOMContentLoaded', () => {
     const form = document.getElementById('jobForm');
     const submitBtn = document.getElementById('submitBtn');
     const validateBtn = document.getElementById('validateBtn');
+    const sourcesContainer = document.getElementById('sourcesContainer');
+    const addSourceBtn = document.getElementById('addSourceBtn');
+    const sourceTemplate = document.getElementById('sourceTemplate');
 
     // Invalidate state on input change
     form.addEventListener('input', () => {
         submitBtn.disabled = true;
     });
+
+    // --- Dynamic Source Logic ---
+
+    function addSource(data = null) {
+        const index = sourcesContainer.children.length;
+        const clone = sourceTemplate.content.cloneNode(true);
+        const sourceEntry = clone.querySelector('.source-entry');
+
+        // Update Title
+        sourceEntry.querySelector('.source-title').textContent = `Source #${index + 1}`;
+
+        // Setup Event Listeners for this source entry
+        setupSourceListeners(sourceEntry);
+
+        // Remove Button Logic
+        const removeBtn = sourceEntry.querySelector('.remove-source-btn');
+        if (index === 0) {
+            removeBtn.style.display = 'none'; // Cannot remove first source
+        } else {
+            removeBtn.addEventListener('click', () => {
+                sourceEntry.remove();
+                updateSourceTitles();
+                submitBtn.disabled = true;
+            });
+        }
+
+        // Populate Data if provided
+        if (data) {
+            populateSourceEntry(sourceEntry, data);
+        }
+
+        sourcesContainer.appendChild(sourceEntry);
+    }
+
+    function updateSourceTitles() {
+        Array.from(sourcesContainer.children).forEach((entry, idx) => {
+            entry.querySelector('.source-title').textContent = `Source #${idx + 1}`;
+        });
+    }
+
+    function setupSourceListeners(entry) {
+        // Auth Toggle
+        const authSelect = entry.querySelector('select[name="sourceAuthType"]');
+        const authFields = entry.querySelectorAll('.auth-field');
+        authSelect.addEventListener('change', () => {
+            const isAuth = authSelect.value !== 'NONE';
+            authFields.forEach(f => f.classList.toggle('hidden', !isAuth));
+        });
+
+        // Offset Timestamp Toggle
+        const offsetSelect = entry.querySelector('select[name="sourceStartingOffset"]');
+        const timestampGroup = entry.querySelector('.offset-timestamp-group');
+        offsetSelect.addEventListener('change', () => {
+            timestampGroup.classList.toggle('hidden', offsetSelect.value !== 'TIMESTAMP');
+        });
+
+        // Watermark Toggle
+        const wmCheckbox = entry.querySelector('input[name="enableWatermark"]');
+        const wmOptions = entry.querySelector('.watermark-options');
+        wmCheckbox.addEventListener('change', () => {
+            wmOptions.classList.toggle('hidden', !wmCheckbox.checked);
+        });
+
+        // Watermark Mode
+        const wmRadios = entry.querySelectorAll('input[name="watermarkMode"]');
+        const wmColGroup = entry.querySelector('.watermark-column-group');
+        wmRadios.forEach(radio => {
+            radio.addEventListener('change', () => {
+                if (radio.checked) {
+                    wmColGroup.classList.toggle('hidden', radio.value !== 'EXISTING');
+                }
+            });
+        });
+
+        // Format Label Change
+        const formatSelect = entry.querySelector('select[name="sourceFormat"]');
+        const schemaLabel = entry.querySelector('.source-schema-label');
+        const schemaArea = entry.querySelector('textarea[name="sourceSchema"]');
+
+        formatSelect.addEventListener('change', () => {
+            if (formatSelect.value === 'AVRO') {
+                schemaLabel.textContent = 'Data Schema (AVRO Schema):';
+                schemaArea.placeholder = 'e.g. { "type": "record", ... }';
+            } else {
+                schemaLabel.textContent = 'Data Schema (JSON Schema):';
+                schemaArea.placeholder = 'e.g. { "type": "object", ... }';
+            }
+        });
+    }
+
+    function populateSourceEntry(entry, data) {
+        entry.querySelector('input[name="sourceBootstrapServers"]').value = data.sourceBootstrapServers || '';
+        entry.querySelector('input[name="sourceTopic"]').value = data.sourceTopic || '';
+        entry.querySelector('input[name="sourceGroupId"]').value = data.sourceGroupId || '';
+        entry.querySelector('select[name="sourceStartingOffset"]').value = data.sourceStartingOffset || 'EARLIEST';
+        entry.querySelector('input[name="sourceStartingOffsetTimestamp"]').value = data.sourceStartingOffsetTimestamp || '';
+        entry.querySelector('input[name="sourceTableName"]').value = data.sourceTableName || '';
+        entry.querySelector('textarea[name="sourceSchema"]').value = data.sourceSchema || '';
+
+        entry.querySelector('select[name="sourceAuthType"]').value = data.sourceAuthType || 'NONE';
+        entry.querySelector('select[name="sourceMechanism"]').value = data.sourceMechanism || 'PLAIN';
+        entry.querySelector('input[name="sourceUsername"]').value = data.sourceUsername || '';
+        entry.querySelector('input[name="sourcePassword"]').value = data.sourcePassword || '';
+        entry.querySelector('select[name="sourceFormat"]').value = data.sourceFormat || 'STRING';
+
+        if (data.enableWatermark) {
+            entry.querySelector('input[name="enableWatermark"]').checked = true;
+            const wmRadios = entry.querySelectorAll('input[name="watermarkMode"]');
+            wmRadios.forEach(r => { if (r.value === data.watermarkMode) r.checked = true; });
+            entry.querySelector('input[name="watermarkColumn"]').value = data.watermarkColumn || '';
+        }
+
+        // Trigger change events to update UI visibility
+        entry.querySelector('select[name="sourceAuthType"]').dispatchEvent(new Event('change'));
+        entry.querySelector('select[name="sourceStartingOffset"]').dispatchEvent(new Event('change'));
+        entry.querySelector('input[name="enableWatermark"]').dispatchEvent(new Event('change'));
+        entry.querySelector('select[name="sourceFormat"]').dispatchEvent(new Event('change'));
+        entry.querySelectorAll('input[name="watermarkMode"]').forEach(r => { if (r.checked) r.dispatchEvent(new Event('change')); });
+    }
+
+    addSourceBtn.addEventListener('click', () => addSource());
+
+    // Initialize with one source
+    addSource();
+
+    // --- End Dynamic Source Logic ---
 
     validateBtn.addEventListener('click', async () => {
         setLoading(validateBtn, true);
@@ -74,7 +203,6 @@ document.addEventListener('DOMContentLoaded', () => {
             if (response.ok) {
                 showNotification(result, 'success');
                 addLog('Deployment Successful: ' + result, 'success');
-                // Ideally reset form or disable submit again to prevent double submit
                 submitBtn.disabled = true;
             } else {
                 showNotification(result, 'error');
@@ -98,18 +226,13 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function addLog(message, type) {
-        // Remove empty state if present
         const emptyState = logContainer.querySelector('.empty-state');
-        if (emptyState) {
-            emptyState.remove();
-        }
+        if (emptyState) emptyState.remove();
 
         const div = document.createElement('div');
         div.className = `log-item ${type}`;
         div.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
         logContainer.appendChild(div);
-
-        // Auto scroll
         logContainer.scrollTop = logContainer.scrollHeight;
     }
 
@@ -118,7 +241,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function getFormData() {
-        // Build object manually to handle non-input elements if needed
         const data = {};
 
         // Inputs
@@ -126,43 +248,43 @@ document.addEventListener('DOMContentLoaded', () => {
         data.parallelism = parseInt(document.getElementById('parallelism').value);
         data.checkpointInterval = parseInt(document.getElementById('checkpointInterval').value);
 
-        // Source
-        data.sourceTopic = document.getElementById('sourceTopic').value;
-        data.sourceBootstrapServers = document.getElementById('sourceBootstrapServers').value;
-        data.sourceGroupId = document.getElementById('sourceGroupId').value;
-        data.sourceGroupId = document.getElementById('sourceGroupId').value;
-        data.sourceStartingOffset = document.getElementById('sourceStartingOffset').value;
-        const timestampVal = document.getElementById('sourceStartingOffsetTimestamp').value;
-        if (timestampVal) {
-            data.sourceStartingOffsetTimestamp = parseInt(timestampVal);
-        }
+        // Sources
+        data.sources = [];
+        const sourceEntries = sourcesContainer.querySelectorAll('.source-entry');
+        sourceEntries.forEach(entry => {
+            const src = {};
+            src.sourceBootstrapServers = entry.querySelector('input[name="sourceBootstrapServers"]').value;
+            src.sourceTopic = entry.querySelector('input[name="sourceTopic"]').value;
+            src.sourceGroupId = entry.querySelector('input[name="sourceGroupId"]').value;
+            src.sourceStartingOffset = entry.querySelector('select[name="sourceStartingOffset"]').value;
 
-        data.sourceTableName = document.getElementById('sourceTableName').value;
+            const ts = entry.querySelector('input[name="sourceStartingOffsetTimestamp"]').value;
+            if (ts) src.sourceStartingOffsetTimestamp = parseInt(ts);
 
-        // Source Format
-        const sourceFormatEl = document.getElementById('sourceFormat');
-        data.sourceFormat = sourceFormatEl ? sourceFormatEl.value : 'STRING';
-        data.sourceSchema = document.getElementById('sourceSchema').value; // Add schema
+            src.sourceTableName = entry.querySelector('input[name="sourceTableName"]').value;
+            src.sourceSchema = entry.querySelector('textarea[name="sourceSchema"]').value;
 
-        // Watermark
-        const enableWatermarkChk = document.getElementById('enableWatermark');
-        data.enableWatermark = enableWatermarkChk ? enableWatermarkChk.checked : false;
-
-        if (data.enableWatermark) {
-            const selectedMode = document.querySelector('input[name="watermarkMode"]:checked');
-            data.watermarkMode = selectedMode ? selectedMode.value : 'PROCESS_TIME';
-            if (data.watermarkMode === 'EXISTING') {
-                data.watermarkColumn = document.getElementById('watermarkColumn').value;
+            src.enableWatermark = entry.querySelector('input[name="enableWatermark"]').checked;
+            if (src.enableWatermark) {
+                const checkedMode = entry.querySelector('input[name="watermarkMode"]:checked');
+                src.watermarkMode = checkedMode ? checkedMode.value : 'PROCESS_TIME';
+                if (src.watermarkMode === 'EXISTING') {
+                    src.watermarkColumn = entry.querySelector('input[name="watermarkColumn"]').value;
+                }
+            } else {
+                src.watermarkMode = 'PROCESS_TIME'; // Default fallbacks
             }
-        }
 
-        const sourceAuthType = document.getElementById('sourceAuthType').value;
-        data.sourceAuthType = sourceAuthType;
-        if (sourceAuthType !== 'NONE') {
-            data.sourceUsername = document.getElementById('sourceUsername').value;
-            data.sourcePassword = document.getElementById('sourcePassword').value;
-            data.sourceMechanism = document.getElementById('sourceMechanism').value;
-        }
+            src.sourceAuthType = entry.querySelector('select[name="sourceAuthType"]').value;
+            if (src.sourceAuthType !== 'NONE') {
+                src.sourceMechanism = entry.querySelector('select[name="sourceMechanism"]').value;
+                src.sourceUsername = entry.querySelector('input[name="sourceUsername"]').value;
+                src.sourcePassword = entry.querySelector('input[name="sourcePassword"]').value;
+            }
+            src.sourceFormat = entry.querySelector('select[name="sourceFormat"]').value;
+
+            data.sources.push(src);
+        });
 
         // Target
         data.targetTopic = document.getElementById('targetTopic').value;
@@ -183,41 +305,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // Transformation
         data.sqlQuery = document.getElementById('sqlQuery').value;
+        data.resultTableName = document.getElementById('resultTableName').value;
 
         return data;
-    }
-
-    // Schema File Upload Handler
-    const schemaFile = document.getElementById('schemaFile');
-    const sourceSchema = document.getElementById('sourceSchema');
-    const sourceFormat = document.getElementById('sourceFormat');
-    const sourceSchemaLabel = document.getElementById('source-schema-label');
-
-    // Dynamic Schema Label
-    if (sourceFormat && sourceSchemaLabel) {
-        sourceFormat.addEventListener('change', () => {
-            const fmt = sourceFormat.value;
-            if (fmt === 'AVRO') {
-                sourceSchemaLabel.textContent = 'Data Schema (AVRO Schema):';
-                sourceSchema.placeholder = 'e.g. { "type": "record", "name": "User", "fields": [...] }';
-            } else {
-                sourceSchemaLabel.textContent = 'Data Schema (JSON Schema):';
-                sourceSchema.placeholder = 'e.g. { "type": "object", "properties": { "id": {"type": "integer"} } }';
-            }
-        });
-    }
-
-    if (schemaFile) {
-        schemaFile.addEventListener('change', (e) => {
-            const file = e.target.files[0];
-            if (!file) return;
-
-            const reader = new FileReader();
-            reader.onload = (e) => {
-                sourceSchema.value = e.target.result;
-            };
-            reader.readAsText(file);
-        });
     }
 
     function setLoading(btn, isLoading) {
@@ -235,69 +325,14 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    const sourceAuthSelect = document.getElementById('sourceAuthType');
+    // Auth Toggle for TARGET
     const targetAuthSelect = document.getElementById('targetAuthType');
-
-    // Auth field toggling
-    function toggleAuthFields(typeSelect) {
-        const type = typeSelect.value;
-        const fields = document.querySelectorAll(`.auth-field[data-for="${typeSelect.id}"]`);
-
-        fields.forEach(field => {
-            if (type === 'NONE') {
-                field.classList.add('hidden');
-            } else {
-                field.classList.remove('hidden');
-            }
-        });
-    }
-
-    if (sourceAuthSelect) {
-        sourceAuthSelect.addEventListener('change', () => toggleAuthFields(sourceAuthSelect));
-    }
-
     if (targetAuthSelect) {
-        targetAuthSelect.addEventListener('change', () => toggleAuthFields(targetAuthSelect));
-    }
-
-    // Offset Timestamp Toggle
-    const sourceOffsetSelect = document.getElementById('sourceStartingOffset');
-    const offsetTimestampGroup = document.getElementById('offsetTimestampGroup');
-
-    if (sourceOffsetSelect) {
-        sourceOffsetSelect.addEventListener('change', () => {
-            if (sourceOffsetSelect.value === 'TIMESTAMP') {
-                offsetTimestampGroup.classList.remove('hidden');
-            } else {
-                offsetTimestampGroup.classList.add('hidden');
-            }
-        });
-    }
-
-    // Watermark Logic
-    const enableWatermark = document.getElementById('enableWatermark');
-    const watermarkOptions = document.getElementById('watermarkOptions');
-    const watermarkModeRadios = document.getElementsByName('watermarkMode');
-    const watermarkColumnGroup = document.getElementById('watermarkColumnGroup');
-
-    if (enableWatermark) {
-        enableWatermark.addEventListener('change', () => {
-            if (enableWatermark.checked) {
-                watermarkOptions.classList.remove('hidden');
-            } else {
-                watermarkOptions.classList.add('hidden');
-            }
-        });
-    }
-
-    if (watermarkModeRadios) {
-        Array.from(watermarkModeRadios).forEach(radio => {
-            radio.addEventListener('change', (e) => {
-                if (e.target.value === 'EXISTING') {
-                    watermarkColumnGroup.classList.remove('hidden');
-                } else {
-                    watermarkColumnGroup.classList.add('hidden');
-                }
+        targetAuthSelect.addEventListener('change', () => {
+            const type = targetAuthSelect.value;
+            const fields = document.querySelectorAll(`.auth-field[data-for="targetAuthType"]`);
+            fields.forEach(field => {
+                field.classList.toggle('hidden', type === 'NONE');
             });
         });
     }
@@ -305,14 +340,63 @@ document.addEventListener('DOMContentLoaded', () => {
     function showNotification(message, type) {
         const notification = document.getElementById('notification');
         const content = notification.querySelector('.notification-content');
-
         content.textContent = message;
         notification.className = `notification show ${type}`;
-
-        setTimeout(() => {
-            notification.classList.remove('show');
-        }, 5000);
+        setTimeout(() => notification.classList.remove('show'), 5000);
     }
+
+    // --- Tab Navigation ---
+    const tabBtns = document.querySelectorAll('.tab-btn');
+    tabBtns.forEach(btn => {
+        btn.addEventListener('click', () => {
+            tabBtns.forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            const tab = btn.dataset.tab;
+            document.querySelectorAll('.tab-content').forEach(c => c.classList.add('hidden'));
+            document.getElementById('tab-' + tab).classList.remove('hidden');
+            document.getElementById('loadConfigBtn').style.display = tab === 'submit' ? '' : 'none';
+            if (tab === 'dashboard') loadRunningJobs();
+        });
+    });
+
+    // --- Dashboard / Running Jobs ---
+    async function loadRunningJobs() {
+        const container = document.getElementById('jobsTableContainer');
+        container.innerHTML = '<div class="empty-state">Loading...</div>';
+        try {
+            const response = await fetch('/api/jobs/list');
+            const jobs = await response.json();
+            if (!jobs || jobs.length === 0) {
+                container.innerHTML = '<div class="empty-state">No jobs found. Submit a job to see it here.</div>';
+                return;
+            }
+            const table = document.createElement('table');
+            table.className = 'jobs-table';
+            table.innerHTML = `
+                <thead><tr>
+                    <th>Job Name</th>
+                    <th>Job ID</th>
+                    <th>Status</th>
+                </tr></thead>
+                <tbody></tbody>`;
+            const tbody = table.querySelector('tbody');
+            jobs.forEach(job => {
+                const tr = document.createElement('tr');
+                const statusClass = job.status || 'UNKNOWN';
+                tr.innerHTML = `
+                    <td>${job.jobName}</td>
+                    <td style="font-family:monospace;font-size:0.8rem;">${job.jobId}</td>
+                    <td><span class="job-status ${statusClass}">${statusClass}</span></td>`;
+                tbody.appendChild(tr);
+            });
+            container.innerHTML = '';
+            container.appendChild(table);
+        } catch (e) {
+            container.innerHTML = '<div class="empty-state" style="color:#ef4444;">Failed to load jobs: ' + e.message + '</div>';
+        }
+    }
+
+    document.getElementById('refreshJobsBtn').addEventListener('click', loadRunningJobs);
 
     // Config Loader
     const configLoader = document.getElementById('configLoader');
@@ -324,23 +408,12 @@ document.addEventListener('DOMContentLoaded', () => {
             const reader = new FileReader();
             reader.onload = (e) => {
                 try {
-                    console.log("Parsing config JSON...");
                     const config = JSON.parse(e.target.result);
-                    console.log("Loaded config:", config);
-
-                    // Handle typo from manual edits
-                    if (config.traget && !config.target) {
-                        console.warn("Found 'traget' typo in JSON, mapping to 'target'");
-                        config.target = config.traget;
-                    }
-
                     populateForm(config);
                     showNotification('Configuration loaded successfully', 'success');
                 } catch (err) {
                     showNotification('Failed to parse configuration file', 'error');
-                    console.error("Config load error:", err);
                 } finally {
-                    // Reset input so same file can be selected again
                     configLoader.value = '';
                 }
             };
@@ -349,81 +422,39 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function populateForm(config) {
-        // Helper to safe set value
-        const setVal = (id, val) => {
-            const el = document.getElementById(id);
-            if (el && val !== undefined && val !== null) {
-                el.value = val;
-                // Trigger change for selects to update UI
-                el.dispatchEvent(new Event('change'));
-            }
-        };
+        document.getElementById('jobName').value = config.jobName || '';
+        document.getElementById('parallelism').value = config.parallelism || 1;
+        document.getElementById('checkpointInterval').value = config.checkpointInterval || 60000;
 
-        setVal('jobName', config.jobName);
-        setVal('parallelism', config.parallelism);
-        setVal('checkpointInterval', config.checkpointInterval);
-
-        // Source
-        if (config.source) {
-            setVal('sourceBootstrapServers', config.source.sourceBootstrapServers);
-            setVal('sourceTopic', config.source.sourceTopic);
-            setVal('sourceGroupId', config.source.sourceGroupId);
-            setVal('sourceTableName', config.source.sourceTableName);
-            setVal('sourceSchema', config.source.sourceSchema);
-            setVal('sourceFormat', config.source.sourceFormat); // Set format
-
-            setVal('sourceAuthType', config.source.sourceAuthType);
-
-            // Watermark populate
-            const enableWatermarkChk = document.getElementById('enableWatermark');
-            if (enableWatermarkChk) {
-                enableWatermarkChk.checked = config.source.enableWatermark === true;
-                enableWatermarkChk.dispatchEvent(new Event('change'));
-            }
-
-            if (config.source.enableWatermark) {
-                const radios = document.getElementsByName('watermarkMode');
-                Array.from(radios).forEach(r => {
-                    if (r.value === config.source.watermarkMode) {
-                        r.checked = true;
-                        r.dispatchEvent(new Event('change'));
-                    }
-                });
-                setVal('watermarkColumn', config.source.watermarkColumn);
-            }
-
-            setTimeout(() => {
-                setVal('sourceUsername', config.source.sourceUsername);
-                setVal('sourcePassword', config.source.sourcePassword);
-                setVal('sourceMechanism', config.source.sourceMechanism);
-            }, 0);
-
-            setVal('sourceStartingOffset', config.source.sourceStartingOffset);
-            setTimeout(() => {
-                setVal('sourceStartingOffsetTimestamp', config.source.sourceStartingOffsetTimestamp);
-            }, 0);
+        // Populate Sources
+        sourcesContainer.innerHTML = ''; // Clear existing
+        if (config.sources && Array.isArray(config.sources)) {
+            config.sources.forEach(src => addSource(src));
+        } else if (config.source) {
+            // Backward compatibility for single source config
+            addSource(config.source);
+        } else {
+            addSource(); // Default empty
         }
 
         // Target
         if (config.target) {
-            setVal('targetBootstrapServers', config.target.targetBootstrapServers);
-            setVal('targetTopic', config.target.targetTopic);
-            setVal('targetAuthType', config.target.targetAuthType);
-            setVal('targetAuthType', config.target.targetAuthType);
-            setVal('targetFormat', config.target.targetFormat);
-            setVal('targetSchema', config.target.targetSchema);
+            document.getElementById('targetBootstrapServers').value = config.target.targetBootstrapServers || '';
+            document.getElementById('targetTopic').value = config.target.targetTopic || '';
+            document.getElementById('targetAuthType').value = config.target.targetAuthType || 'NONE';
+            document.getElementById('targetFormat').value = config.target.targetFormat || 'STRING';
+            document.getElementById('targetSchema').value = config.target.targetSchema || '';
+            document.getElementById('targetUsername').value = config.target.targetUsername || '';
+            document.getElementById('targetPassword').value = config.target.targetPassword || '';
+            document.getElementById('targetMechanism').value = config.target.targetMechanism || 'PLAIN';
 
-            setTimeout(() => {
-                setVal('targetUsername', config.target.targetUsername);
-                setVal('targetPassword', config.target.targetPassword);
-                setVal('targetMechanism', config.target.targetMechanism);
-            }, 0);
+            document.getElementById('targetAuthType').dispatchEvent(new Event('change'));
         }
 
         // Transformation
         if (config.transformation) {
-            setVal('sqlQuery', config.transformation.sqlQuery);
-            setVal('resultTableName', config.transformation.resultTableName);
+            document.getElementById('sqlQuery').value = config.transformation.sqlQuery || '';
+            document.getElementById('resultTableName').value = config.transformation.resultTableName || '';
         }
     }
 });

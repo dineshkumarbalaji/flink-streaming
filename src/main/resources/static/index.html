@@ -53,6 +53,66 @@
             margin-top: 0.5rem;
             margin-bottom: 1rem;
         }
+
+        .tab-nav {
+            display: flex;
+            gap: 0.25rem;
+            background: var(--surface);
+            border-radius: 6px;
+            padding: 0.25rem;
+        }
+
+        .tab-btn {
+            background: transparent;
+            border: none;
+            color: var(--text-muted, #aaa);
+            padding: 0.35rem 1rem;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            font-family: inherit;
+            transition: background 0.2s, color 0.2s;
+        }
+
+        .tab-btn.active {
+            background: var(--primary);
+            color: #fff;
+        }
+
+        .tab-content { display: block; }
+        .tab-content.hidden { display: none; }
+
+        .jobs-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .jobs-table th, .jobs-table td {
+            text-align: left;
+            padding: 0.75rem 1rem;
+            border-bottom: 1px solid var(--border);
+            font-size: 0.9rem;
+        }
+
+        .jobs-table th {
+            color: var(--text-muted, #aaa);
+            font-weight: 500;
+        }
+
+        .job-status {
+            display: inline-block;
+            padding: 0.2rem 0.6rem;
+            border-radius: 12px;
+            font-size: 0.8rem;
+            font-weight: 600;
+        }
+
+        .job-status.RUNNING   { background: rgba(34,197,94,0.15);  color: #22c55e; }
+        .job-status.FINISHED  { background: rgba(99,102,241,0.15); color: #818cf8; }
+        .job-status.FAILED    { background: rgba(239,68,68,0.15);  color: #ef4444; }
+        .job-status.CANCELED  { background: rgba(156,163,175,0.15); color: #9ca3af; }
+        .job-status.CREATED   { background: rgba(250,204,21,0.15); color: #facc15; }
+        .job-status.UNKNOWN   { background: rgba(156,163,175,0.15); color: #9ca3af; }
     </style>
 </head>
 
@@ -71,8 +131,12 @@
                 <h1>Flink Control</h1>
             </div>
             <div class="header-actions">
+                <nav class="tab-nav">
+                    <button class="tab-btn active" data-tab="submit">Submit Job</button>
+                    <button class="tab-btn" data-tab="dashboard">Dashboard</button>
+                </nav>
                 <input type="file" id="configLoader" accept=".json" style="display: none;">
-                <button class="btn-secondary small" onclick="document.getElementById('configLoader').click()">
+                <button class="btn-secondary small" id="loadConfigBtn" onclick="document.getElementById('configLoader').click()">
                     Load Config
                 </button>
                 <div class="status-indicator">
@@ -82,6 +146,7 @@
             </div>
         </header>
 
+        <div id="tab-submit" class="tab-content active">
         <div class="layout-grid">
             <main>
                 <form id="jobForm" class="glass-panel">
@@ -108,123 +173,133 @@
 
                     <div class="grid-2">
                         <section class="form-section">
-                            <h2>Source (Kafka)</h2>
-                            <div class="form-group">
-                                <label for="sourceBootstrapServers">Bootstrap Servers</label>
-                                <input type="text" id="sourceBootstrapServers" name="sourceBootstrapServers"
-                                    placeholder="localhost:9092" required>
-                            </div>
-                            <div class="form-group">
-                                <label for="sourceTopic">Topic</label>
-                                <input type="text" id="sourceTopic" name="sourceTopic" placeholder="input-topic"
-                                    required>
-                            </div>
-                            <div class="form-group">
-                                <label for="sourceGroupId">Group ID</label>
-                                <input type="text" id="sourceGroupId" name="sourceGroupId" placeholder="flink-group-1">
+                            <div class="header-actions" style="justify-content: space-between; margin-bottom: 1rem;">
+                                <h2>Sources</h2>
+                                <button type="button" id="addSourceBtn" class="btn-secondary small">
+                                    + Add Source
+                                </button>
                             </div>
 
-                            <div class="form-group">
-                                <label for="sourceStartingOffset">Starting Offset</label>
-                                <select id="sourceStartingOffset" name="sourceStartingOffset">
-                                    <option value="EARLIEST">Earliest</option>
-                                    <option value="LATEST">Latest</option>
-                                    <option value="GROUP_OFFSETS">Group Offsets (Committed)</option>
-                                    <option value="TIMESTAMP">Timestamp</option>
-                                </select>
-                            </div>
-                            <div class="form-group hidden" id="offsetTimestampGroup">
-                                <label for="sourceStartingOffsetTimestamp">Offset Timestamp (Unix ms)</label>
-                                <input type="number" id="sourceStartingOffsetTimestamp"
-                                    name="sourceStartingOffsetTimestamp" placeholder="e.g. 1678886400000">
+                            <div id="sourcesContainer">
+                                <!-- Dynamic Source Forms will be injected here -->
                             </div>
 
-                            <div class="form-group">
-                                <label for="sourceTableName">Source Table Name</label>
-                                <input type="text" id="sourceTableName" name="sourceTableName"
-                                    placeholder="source_table">
-                            </div>
+                            <!-- Source Form Template (Hidden) -->
+                            <template id="sourceTemplate">
+                                <div class="source-entry"
+                                    style="border: 1px solid var(--border); padding: 1rem; border-radius: 4px; margin-bottom: 1rem;">
+                                    <div class="source-header"
+                                        style="display: flex; justify-content: space-between; margin-bottom: 1rem;">
+                                        <h3 class="source-title">Source #1</h3>
+                                        <button type="button" class="btn-danger small remove-source-btn">Remove</button>
+                                    </div>
 
-                            <!-- Schema -->
-                            <div class="form-group">
-                                <label for="sourceSchema" id="source-schema-label">Data Schema (JSON Schema):</label>
-                                <textarea id="sourceSchema" name="sourceSchema"
-                                    placeholder='e.g. { "type": "object", "properties": { "id": {"type": "integer"} } }'></textarea>
-                                <small>Optional. Used for validation.</small>
-                                <div class="file-upload-wrapper mt-2">
-                                    <small class="hint">Upload schema file or paste above</small>
-                                </div>
-                            </div>
+                                    <div class="form-group">
+                                        <label>Bootstrap Servers</label>
+                                        <input type="text" name="sourceBootstrapServers" placeholder="localhost:9092"
+                                            required>
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Topic</label>
+                                        <input type="text" name="sourceTopic" placeholder="input-topic" required>
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Group ID</label>
+                                        <input type="text" name="sourceGroupId" placeholder="flink-group-1">
+                                    </div>
 
-                            <!-- Watermark Configuration -->
-                            <div class="form-group custom-checkbox">
-                                <label class="checkbox-container">
-                                    <input type="checkbox" id="enableWatermark" name="enableWatermark">
-                                    <span class="checkmark"></span>
-                                    Enable Watermark Generation
-                                </label>
-                            </div>
+                                    <div class="form-group">
+                                        <label>Starting Offset</label>
+                                        <select name="sourceStartingOffset">
+                                            <option value="EARLIEST">Earliest</option>
+                                            <option value="LATEST">Latest</option>
+                                            <option value="GROUP_OFFSETS">Group Offsets (Committed)</option>
+                                            <option value="TIMESTAMP">Timestamp</option>
+                                        </select>
+                                    </div>
+                                    <div class="form-group hidden offset-timestamp-group">
+                                        <label>Offset Timestamp (Unix ms)</label>
+                                        <input type="number" name="sourceStartingOffsetTimestamp"
+                                            placeholder="e.g. 1678886400000">
+                                    </div>
 
-                            <div class="watermark-options hidden" id="watermarkOptions">
-                                <div class="form-group radio-group">
-                                    <label class="radio-container">
-                                        <input type="radio" name="watermarkMode" value="PROCESS_TIME" checked>
-                                        <span class="radio-mark"></span>
-                                        <div>
-                                            Process Time (Default)
-                                            <div
-                                                style="font-size: 0.8rem; color: var(--text-secondary); margin-top: 2px;">
-                                                Adds column <code>processed_time</code> for SQL
-                                            </div>
+                                    <div class="form-group">
+                                        <label>Source Table Name (for SQL)</label>
+                                        <input type="text" name="sourceTableName" placeholder="source_table">
+                                    </div>
+
+                                    <!-- Schema -->
+                                    <div class="form-group">
+                                        <label class="source-schema-label">Data Schema (JSON Schema):</label>
+                                        <textarea name="sourceSchema"
+                                            placeholder='e.g. { "type": "object", "properties": { "id": {"type": "integer"} } }'></textarea>
+                                        <small>Optional. Used for validation.</small>
+                                    </div>
+
+                                    <!-- Watermark Configuration -->
+                                    <div class="form-group custom-checkbox">
+                                        <label class="checkbox-container">
+                                            <input type="checkbox" name="enableWatermark">
+                                            <span class="checkmark"></span>
+                                            Enable Watermark Generation
+                                        </label>
+                                    </div>
+
+                                    <div class="watermark-options hidden">
+                                        <div class="form-group radio-group">
+                                            <label class="radio-container">
+                                                <input type="radio" name="watermarkMode" value="PROCESS_TIME" checked>
+                                                <span class="radio-mark"></span>
+                                                <div>Process Time (Default)</div>
+                                            </label>
+                                            <label class="radio-container">
+                                                <input type="radio" name="watermarkMode" value="EXISTING">
+                                                <span class="radio-mark"></span>
+                                                Existing Timestamp Column
+                                            </label>
                                         </div>
-                                    </label>
-                                    <label class="radio-container">
-                                        <input type="radio" name="watermarkMode" value="EXISTING">
-                                        <span class="radio-mark"></span>
-                                        Existing Timestamp Column
-                                    </label>
+
+                                        <div class="form-group hidden watermark-column-group">
+                                            <label>Timestamp Column Name</label>
+                                            <input type="text" name="watermarkColumn" placeholder="e.g. event_time">
+                                        </div>
+                                    </div>
+
+                                    <div class="form-group">
+                                        <label>Authentication Protocol</label>
+                                        <select name="sourceAuthType">
+                                            <option value="NONE">None</option>
+                                            <option value="SASL_PLAINTEXT">SASL_PLAINTEXT</option>
+                                            <option value="SASL_SSL">SASL_SSL</option>
+                                        </select>
+                                    </div>
+
+                                    <div class="form-group">
+                                        <label>Data Format</label>
+                                        <select name="sourceFormat">
+                                            <option value="STRING">String</option>
+                                            <option value="JSON">JSON</option>
+                                            <option value="AVRO">Avro</option>
+                                        </select>
+                                    </div>
+
+                                    <div class="form-group auth-field hidden" data-for="sourceAuthType">
+                                        <label>SASL Mechanism</label>
+                                        <select name="sourceMechanism">
+                                            <option value="PLAIN">PLAIN</option>
+                                            <option value="SCRAM-SHA-256">SCRAM-SHA-256</option>
+                                        </select>
+                                    </div>
+                                    <div class="form-group auth-field hidden" data-for="sourceAuthType">
+                                        <label>Username</label>
+                                        <input type="text" name="sourceUsername">
+                                    </div>
+                                    <div class="form-group auth-field hidden" data-for="sourceAuthType">
+                                        <label>Password</label>
+                                        <input type="password" name="sourcePassword">
+                                    </div>
                                 </div>
-
-                                <div class="form-group hidden" id="watermarkColumnGroup">
-                                    <label for="watermarkColumn">Timestamp Column Name</label>
-                                    <input type="text" id="watermarkColumn" name="watermarkColumn"
-                                        placeholder="e.g. event_time">
-                                </div>
-                            </div>
-
-                            <div class="form-group">
-                                <label for="sourceAuthType">Authentication Protocol</label>
-                                <select id="sourceAuthType" name="sourceAuthType">
-                                    <option value="NONE">None</option>
-                                    <option value="SASL_PLAINTEXT">SASL_PLAINTEXT</option>
-                                    <option value="SASL_SSL">SASL_SSL</option>
-                                </select>
-                            </div>
-
-                            <div class="form-group">
-                                <label for="sourceFormat">Data Format</label>
-                                <select id="sourceFormat" name="sourceFormat">
-                                    <option value="STRING">String</option>
-                                    <option value="JSON">JSON</option>
-                                    <option value="AVRO">Avro</option>
-                                </select>
-                            </div>
-
-                            <div class="form-group auth-field hidden" data-for="sourceAuthType">
-                                <label for="sourceMechanism">SASL Mechanism</label>
-                                <select id="sourceMechanism" name="sourceMechanism">
-                                    <option value="PLAIN">PLAIN</option>
-                                    <option value="SCRAM-SHA-256">SCRAM-SHA-256</option>
-                                </select>
-                            </div>
-                            <div class="form-group auth-field hidden" data-for="sourceAuthType">
-                                <label for="sourceUsername">Username</label>
-                                <input type="text" id="sourceUsername" name="sourceUsername">
-                            </div>
-                            <div class="form-group auth-field hidden" data-for="sourceAuthType">
-                                <label for="sourcePassword">Password</label>
-                                <input type="password" id="sourcePassword" name="sourcePassword">
-                            </div>
+                            </template>
                         </section>
 
                         <section class="form-section">
@@ -322,6 +397,19 @@
                     <div class="empty-state">No validation logs yet. Run validation to see details.</div>
                 </div>
             </aside>
+        </div>
+        </div>
+
+        <div id="tab-dashboard" class="tab-content hidden">
+            <div class="glass-panel" style="padding: 1.5rem;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
+                    <h2>Running Jobs</h2>
+                    <button class="btn-secondary small" id="refreshJobsBtn">Refresh</button>
+                </div>
+                <div id="jobsTableContainer">
+                    <div class="empty-state">No jobs found. Submit a job to see it here.</div>
+                </div>
+            </div>
         </div>
 
         <div id="notification" class="notification hidden">
