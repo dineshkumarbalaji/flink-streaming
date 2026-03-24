@@ -1,7 +1,7 @@
-# Antheon Flink Streaming Service - Product Documentation (v1.0)
+# DataHonDo Flink Streaming Service - Product Documentation (v1.0)
 
 ## 1. Overview
-The **Antheon Flink Streaming Service** is a low-code, dynamic streaming platform designed to simplify the creation, deployment, and management of real-time data pipelines. Built on **Apache Flink** and **Spring Boot**, it allows users to define extract, transform, and load (ETL) logic using standard SQL without writing complex Java/Scala code.
+The **DataHonDo Flink Streaming Service** is a low-code, dynamic streaming platform designed to simplify the creation, deployment, and management of real-time data pipelines. Built on **Apache Flink** and **Spring Boot**, it allows users to define extract, transform, and load (ETL) logic using standard SQL without writing complex Java/Scala code.
 
 ## 2. Technology Stack
 *   **Core Engine**: Apache Flink 1.18 (Java 8/11/17 Compatible)
