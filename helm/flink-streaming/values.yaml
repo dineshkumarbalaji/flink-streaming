@@ -1,0 +1,142 @@
+# Default values for flink-streaming
+replicaCount: 1
+
+# global.azure.images is used by deployment.yaml for CPA-compatible image references.
+# Overridden by the umbrella platform chart in Marketplace deployments.
+global:
+  azure:
+    images:
+      flinkStreaming:
+        registry: globalemdeproductacr.azurecr.io
+        image: flink-streaming
+        tag: "1.0.0"
+
+image:
+  repository: globalemdeproductacr.azurecr.io/flink-streaming
+  pullPolicy: Always
+  tag: "1.0.0"
+
+imagePullSecrets:
+  - name: globalemdeproductacr-secret
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: "flink-streaming-sa"
+
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "8080"
+  prometheus.io/path: "/actuator/prometheus"
+  loki.io/scrape: "true"
+
+# Note: the base Dockerfile (eclipse-temurin:8-jre) runs as root by default.
+# Update the Dockerfile with `useradd -m -u 1000 appuser` to enable runAsNonRoot.
+podSecurityContext:
+  runAsNonRoot: false
+
+securityContext:
+  capabilities:
+    drop:
+    - ALL
+  readOnlyRootFilesystem: false
+  allowPrivilegeEscalation: false
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8080
+  annotations: {}
+
+ingress:
+  enabled: false
+  className: "webapprouting.kubernetes.azure.com"
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+  hosts:
+    - host: flink-streaming.dev.eaashl.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: flink-streaming-tls
+      hosts:
+        - flink-streaming.dev.eaashl.com
+
+resources:
+  limits:
+    cpu: 2000m
+    memory: 2Gi
+  requests:
+    cpu: 500m
+    memory: 1Gi
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 80
+  targetMemoryUtilizationPercentage: 80
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+
+# Probes — Spring Boot app is on port 8080
+livenessProbe:
+  httpGet:
+    path: /
+    port: 8080
+  initialDelaySeconds: 60
+  periodSeconds: 15
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /
+    port: 8080
+  initialDelaySeconds: 30
+  periodSeconds: 10
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+# Environment variables — configmap and secret refs managed by emde-configmap / emde-secrets
+env:
+  - name: STREAMING_JOB_FLINK_REMOTE
+    valueFrom:
+      configMapKeyRef:
+        name: flink-streaming-config
+        key: STREAMING_JOB_FLINK_REMOTE
+  - name: STREAMING_JOB_FLINK_HOST
+    valueFrom:
+      configMapKeyRef:
+        name: flink-streaming-config
+        key: STREAMING_JOB_FLINK_HOST
+  - name: STREAMING_JOB_FLINK_PORT
+    valueFrom:
+      configMapKeyRef:
+        name: flink-streaming-config
+        key: STREAMING_JOB_FLINK_PORT
+  - name: STREAMING_JOB_FLINK_JAR_PATH
+    valueFrom:
+      configMapKeyRef:
+        name: flink-streaming-config
+        key: STREAMING_JOB_FLINK_JAR_PATH
+
+# ConfigMap managed by emde-configmap chart; set enabled: true to deploy inline for standalone use
+configMap:
+  enabled: false
+  data:
+    STREAMING_JOB_FLINK_REMOTE: "true"
+    STREAMING_JOB_FLINK_HOST: "flink-jobmanager"
+    STREAMING_JOB_FLINK_PORT: "8081"
+    STREAMING_JOB_FLINK_JAR_PATH: "/app/flink-job.jar"
+
+secret:
+  enabled: false
+  data: {}

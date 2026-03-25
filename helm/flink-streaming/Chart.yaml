@@ -1,0 +1,14 @@
+apiVersion: v2
+name: flink-streaming
+description: A Helm chart for DataHondo Flink Streaming — low-code Kafka-to-Kafka streaming pipeline platform
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+keywords:
+  - flink
+  - kafka
+  - streaming
+  - datahondo
+maintainers:
+  - name: DataHondo Team
+home: https://github.com/your-org/flink-streaming

@@ -1,0 +1,54 @@
+variables:
+  # Agent Pool
+  poolName: 'Kubernetes-Pool'
+
+  # Triggers & Paths
+  triggerBranches: 'main, master, feature/*, release/*'
+  prBranches: 'main, master, release/*'
+  pathIncludes: 'flink_streaming/**'
+  pathExcludes: 'README.md, **/*.md'
+
+  # Stage Control
+  skipVersionCalculation: 'false'
+  skipSecurity: 'true'
+  skipTests: 'true'
+  skipPackage: 'false'
+  skipDeploy: 'false'
+
+  # Job-level Control
+  skipValidateConfig: 'false'
+  skipDependencyCheck: 'false'
+  skipSASTScan: 'false'
+  skipUnitTests: 'false'
+  skipDockerBuild: 'false'
+  skipTrivyScan: 'false'
+  skipHelmPackage: 'false'
+  skipTagSIT: 'false'
+  skipManualPromotion: 'false'
+  skipTagPromotion: 'false'
+
+  # Artifacts & Container Registry
+  acrName: 'globalemdeproductacr'
+  # Note: acrLoginUser and acrLoginPassword are injected at runtime from the
+  # 'globalemdeproductacr-credentials' Variable Group (Key Vault) — NOT stored here.
+  registryRepo: 'helm'
+
+  # Deployment
+  sitNamespace: 'dvx'
+  uatNamespace: 'emde-uat'
+  prdNamespace: 'emde-prd'
+  deployTimeout: '600s'
+
+  # Paths & Project Structure
+  projectPath: '.'
+
+  # Component Config
+  imageName: 'flink-streaming'
+  chartPath: 'helm/flink-streaming'
+  chartYamlFile: 'helm/flink-streaming/Chart.yaml'
+
+  # Deploy Command
+  # NOTE: ADO does not recursively expand macros inside variable values.
+  # The CD pipeline overrides deployCommand with release name and chart path hardcoded.
+  # $(targetNamespace) and $(imageTag) are kept as ADO macros — expanded at script execution time.
+  deployCommand: ""
