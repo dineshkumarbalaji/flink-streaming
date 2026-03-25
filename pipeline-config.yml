@@ -44,8 +44,8 @@ variables:
 
   # Component Config
   imageName: 'flink-streaming'
-  chartPath: 'helm/flink-streaming'
-  chartYamlFile: 'helm/flink-streaming/Chart.yaml'
+  chartPath: '.'
+  chartYamlFile: 'Chart.yaml'
 
   # Deploy Command
   # NOTE: ADO does not recursively expand macros inside variable values.
