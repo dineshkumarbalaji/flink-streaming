@@ -2,7 +2,7 @@ package com.datahondo.flink.streaming.job;
 
 import com.datahondo.flink.streaming.config.StreamingJobConfig;
 import com.datahondo.flink.streaming.source.KafkaSourceLayer;
-import com.datahondo.flink.streaming.target.KafkaTargetLayer;
+import com.datahondo.flink.streaming.sink.KafkaTargetLayer;
 import com.datahondo.flink.streaming.transformation.TransformationLayer;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
