@@ -9,12 +9,12 @@ global:
       flinkStreaming:
         registry: globalemdeproductacr.azurecr.io
         image: flink-streaming
-        tag: "1.0.0"
+        tag: "1.0.0-devops.1171"
 
 image:
   repository: globalemdeproductacr.azurecr.io/flink-streaming
   pullPolicy: Always
-  tag: "1.0.0"
+  tag: "1.0.0-devops.1171"
 
 imagePullSecrets:
   - name: globalemdeproductacr-secret
@@ -51,7 +51,7 @@ service:
   annotations: {}
 
 ingress:
-  enabled: false
+  enabled: true
   className: "webapprouting.kubernetes.azure.com"
   annotations:
     cert-manager.io/cluster-issuer: letsencrypt-prod
@@ -59,7 +59,7 @@ ingress:
     - host: flink-streaming.dev.eaashl.com
       paths:
         - path: /
-          pathType: Prefix
+          pathType: ImplementationSpecific
   tls:
     - secretName: flink-streaming-tls
       hosts:
@@ -128,12 +128,12 @@ env:
         name: flink-streaming-config
         key: STREAMING_JOB_FLINK_JAR_PATH
 
-# ConfigMap managed by emde-configmap chart; set enabled: true to deploy inline for standalone use
+# ConfigMap deployed inline (standalone mode — no external Flink cluster in dvx)
 configMap:
-  enabled: false
+  enabled: true
   data:
-    STREAMING_JOB_FLINK_REMOTE: "true"
-    STREAMING_JOB_FLINK_HOST: "flink-jobmanager"
+    STREAMING_JOB_FLINK_REMOTE: "false"
+    STREAMING_JOB_FLINK_HOST: "localhost"
     STREAMING_JOB_FLINK_PORT: "8081"
     STREAMING_JOB_FLINK_JAR_PATH: "/app/flink-job.jar"
 
