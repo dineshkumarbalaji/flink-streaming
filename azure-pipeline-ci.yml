@@ -13,7 +13,5 @@ extends:
   template: templates/common-ci.yml@pipeline-library
   parameters:
     appName: 'flink-streaming'
-    componentName: 'app'
     imageName: $(imageName)
     chartPath: $(chartPath)
-    buildContext: '.'

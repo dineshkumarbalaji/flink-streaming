@@ -14,6 +14,7 @@ variables:
   skipTests: 'true'
   skipPackage: 'false'
   skipDeploy: 'false'
+  isContainer: 'true'
 
   # Job-level Control
   skipValidateConfig: 'false'
@@ -53,14 +54,11 @@ variables:
 
 
   # Deploy Command
-  # NOTE: ADO does not recursively expand macros inside variable values.
-  # The CD pipeline overrides deployCommand with release name and chart path hardcoded.
-  # $(targetNamespace) and $(imageTag) are kept as ADO macros — expanded at script execution time.
-  # Deploy Command
   deployCommand: |
     helm upgrade --install $(deployReleaseName) $(chartPath) \
       -f $(chartPath)/values.yaml \
       -n $(targetNamespace) \
       --set image.tag=$(imageTag) \
+      --set global.azure.images.flinkStreaming.tag=$(imageTag) \
       --wait \
       --timeout=$(deployTimeout)

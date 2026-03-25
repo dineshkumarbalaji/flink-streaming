@@ -12,19 +12,6 @@ resources:
 variables:
 - group: globalemdeproductacr-credentials  # ACR credentials from Key Vault via DevOps Library
 - template: pipeline-config.yml
-- name: deployReleaseName
-  value: 'flink-streaming'
-- name: chartPath
-  value: $(chartPath)
-- name: deployCommand
-  value: >-
-    helm upgrade --install flink-streaming helm/flink-streaming
-    -f helm/flink-streaming/values.yaml
-    -n $(targetNamespace)
-    --set image.tag=$(imageTag)
-    --set global.azure.images.flinkStreaming.tag=$(imageTag)
-    --wait
-    --timeout=$(deployTimeout)
 
 extends:
   template: templates/common-cd.yml@pipeline-library
