@@ -30,6 +30,7 @@ public class JobController {
     private static final String DEFAULT_FLINK_HOST = "jobmanager";
     private static final int DEFAULT_FLINK_PORT = 8081;
     private static final String DEFAULT_JAR_PATH = "/app/flink-job.jar";
+    private static final String REDACTED = "***REDACTED***";
 
     @GetMapping("/list")
     public ResponseEntity<java.util.List<java.util.Map<String, String>>> listJobs() {
@@ -84,8 +85,9 @@ public class JobController {
                 // or just pass main requirements. Ideally validator should know about all tables.
                 // For now passing first source details or empty if multi-source complex logic
                 String firstSourceTable = config.getSources().get(0).getTableName();
-                String firstSourceSchema = config.getSources().get(0).getSchema();
-                
+                SchemaConfig firstSourceSchemaConfig = config.getSources().get(0).getSchema();
+                String firstSourceSchema = (firstSourceSchemaConfig != null) ? firstSourceSchemaConfig.getDefinition() : null;
+
                 JobRequest.SourceJobRequest firstSrc = request.getSources().get(0);
                 String watermarkMode = firstSrc.getWatermarkMode();
                 boolean hasWatermark = firstSrc.isEnableWatermark() && watermarkMode != null && !watermarkMode.equals("NONE");
@@ -97,6 +99,20 @@ public class JobController {
                 return ResponseEntity.ok(new ValidationResponse(false, logs));
             }
             
+            // Validate Checkpoint Directory URI (if provided)
+            logs.add("Validating Flink Config...");
+            String checkpointDir = request.getCheckpointDir();
+            if (checkpointDir != null && !checkpointDir.isEmpty()) {
+                if (checkpointDir.matches("(?i)file://[^/].*")) {
+                    logs.add("❌ Invalid checkpoint directory '" + checkpointDir
+                            + "': local paths require three slashes, e.g. file:///tmp/checkpoints");
+                    return ResponseEntity.ok(new ValidationResponse(false, logs));
+                }
+                logs.add("✅ Checkpoint directory URI format OK");
+            } else {
+                logs.add("✅ Checkpoint directory: using cluster default");
+            }
+
             logs.add("✅ All checks passed. Ready to deploy.");
             return ResponseEntity.ok(new ValidationResponse(true, logs));
             
@@ -107,9 +123,26 @@ public class JobController {
         }
     }
     
+    @DeleteMapping("/{jobName}")
+    public ResponseEntity<String> cancelJob(@PathVariable String jobName) {
+        log.info("Received cancel request for job: {}", jobName);
+        try {
+            orchestrator.cancelJob(jobName);
+            return ResponseEntity.ok("Job '" + jobName + "' cancelled.");
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.notFound().build();
+        } catch (Exception e) {
+            log.error("Failed to cancel job '{}'", jobName, e);
+            return ResponseEntity.internalServerError().body("Failed to cancel job: " + e.getMessage());
+        }
+    }
+
     @PostMapping("/submit")
     public ResponseEntity<String> submitJob(@RequestBody JobRequest request) {
         log.info("Received job submission request: {}", request.getJobName());
+        if (request.getSources() == null || request.getSources().isEmpty()) {
+            return ResponseEntity.badRequest().body("Job must have at least one source configured.");
+        }
         try {
             StreamingJobConfig config = mapToConfig(request);
             orchestrator.submitJob(config);
@@ -142,14 +175,21 @@ public class JobController {
                     .targetMechanism(request.getTargetMechanism())
                     .targetFormat(request.getTargetFormat())
                     .targetSchema(request.getTargetSchema())
+                    .targetSchemaType(request.getTargetSchemaType())
+                    .targetSchemaRegistryUrl(request.getTargetSchemaRegistryUrl())
+                    .targetSchemaSubject(request.getTargetSchemaSubject())
                     .build())
                 .build();
+
+            redactPasswords(savedConfig);
 
             com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
             mapper.enable(com.fasterxml.jackson.databind.SerializationFeature.INDENT_OUTPUT);
             String json = mapper.writeValueAsString(savedConfig);
-            
-            log.info("Job Configuration JSON:\n{}", json);
+
+            log.info("Saving job configuration for '{}' ({} source(s))",
+                    savedConfig.getJobName(),
+                    savedConfig.getSources() != null ? savedConfig.getSources().size() : 0);
             
             String fileName = "configs/" + request.getJobName() + ".json";
             java.io.File file = new java.io.File(fileName);
@@ -177,35 +217,43 @@ public class JobController {
                 String sourceTableName = (srcReq.getSourceTableName() != null && !srcReq.getSourceTableName().isEmpty()) 
                         ? srcReq.getSourceTableName() : "source_table_" + sources.size();
                 source.setTableName(sourceTableName);
-                source.setSchema(srcReq.getSourceSchema());
-                
+                source.setAlias(srcReq.getSourceAlias());
+                source.setSchema(buildSchemaConfig(srcReq.getSourceSchema(), srcReq.getSourceSchemaType(),
+                        srcReq.getSourceSchemaRegistryUrl(), srcReq.getSourceSchemaSubject()));
+
                 KafkaConfig sourceKafka = new KafkaConfig();
                 sourceKafka.setTopic(srcReq.getSourceTopic());
                 sourceKafka.setBootstrapServers(srcReq.getSourceBootstrapServers());
                 sourceKafka.setGroupId(srcReq.getSourceGroupId());
-                
+
                 if (srcReq.getSourceAuthType() != null && !srcReq.getSourceAuthType().equals("NONE")) {
                     AuthConfig auth = new AuthConfig();
                     auth.setType(srcReq.getSourceAuthType());
                     auth.setUsername(srcReq.getSourceUsername());
                     auth.setPassword(srcReq.getSourcePassword());
                     auth.setMechanism(srcReq.getSourceMechanism());
+                    auth.setTruststoreLocation(srcReq.getSourceTruststoreLocation());
+                    auth.setTruststorePassword(srcReq.getSourceTruststorePassword());
+                    auth.setJaasConfig(srcReq.getSourceJaasConfig());
                     sourceKafka.setAuthentication(auth);
                 }
-                
+
+                sourceKafka.setStartupMode(srcReq.getSourceStartupMode());
                 sourceKafka.setStartingOffset(srcReq.getSourceStartingOffset());
                 sourceKafka.setStartingOffsetTimestamp(srcReq.getSourceStartingOffsetTimestamp());
                 sourceKafka.setFormat(srcReq.getSourceFormat());
-                
+
                 source.setKafka(sourceKafka);
-                
+
                 // Watermark
                 WatermarkConfig watermark = new WatermarkConfig();
                 if (srcReq.isEnableWatermark()) {
                     watermark.setStrategy("BOUNDED");
                     watermark.setMode(srcReq.getWatermarkMode());
                     watermark.setTimestampColumn(srcReq.getWatermarkColumn());
-                    watermark.setMaxOutOfOrderness(5000);
+                    long maxOutOfOrderness = srcReq.getWatermarkMaxOutOfOrderness() != null
+                            ? srcReq.getWatermarkMaxOutOfOrderness() : 5000L;
+                    watermark.setMaxOutOfOrderness(maxOutOfOrderness);
                 } else {
                     watermark.setStrategy("NONE");
                 }
@@ -218,31 +266,38 @@ public class JobController {
         
         // Transformation
         TransformationConfig transformation = new TransformationConfig();
+        transformation.setType(request.getTransformationType());
         transformation.setSqlContent(request.getSqlQuery());
-        String resultTableName = (request.getResultTableName() != null && !request.getResultTableName().isEmpty()) 
+        transformation.setSqlFilePath(request.getSqlFilePath());
+        String resultTableName = (request.getResultTableName() != null && !request.getResultTableName().isEmpty())
                 ? request.getResultTableName() : "result_table";
         transformation.setResultTableName(resultTableName);
         config.setTransformation(transformation);
-        
+
         // Target
         TargetConfig target = new TargetConfig();
+        if (request.getTargetType() != null) target.setType(request.getTargetType());
         KafkaConfig targetKafka = new KafkaConfig();
         targetKafka.setTopic(request.getTargetTopic());
         targetKafka.setBootstrapServers(request.getTargetBootstrapServers());
-        
+
         if (request.getTargetAuthType() != null && !request.getTargetAuthType().equals("NONE")) {
             AuthConfig auth = new AuthConfig();
             auth.setType(request.getTargetAuthType());
             auth.setUsername(request.getTargetUsername());
             auth.setPassword(request.getTargetPassword());
             auth.setMechanism(request.getTargetMechanism());
+            auth.setTruststoreLocation(request.getTargetTruststoreLocation());
+            auth.setTruststorePassword(request.getTargetTruststorePassword());
+            auth.setJaasConfig(request.getTargetJaasConfig());
             targetKafka.setAuthentication(auth);
         }
         
         
         targetKafka.setFormat(request.getTargetFormat());
         target.setKafka(targetKafka);
-        target.setSchema(request.getTargetSchema()); // Set target schema
+        target.setSchema(buildSchemaConfig(request.getTargetSchema(), request.getTargetSchemaType(),
+                request.getTargetSchemaRegistryUrl(), request.getTargetSchemaSubject()));
         config.setTarget(target);
         
         // Flink
@@ -278,9 +333,45 @@ public class JobController {
         
         flink.setParallelism(request.getParallelism() != null ? request.getParallelism() : 1);
         flink.setCheckpointInterval(request.getCheckpointInterval() != null ? request.getCheckpointInterval() : 60000L);
+        if (request.getCheckpointDir() != null && !request.getCheckpointDir().isEmpty()) {
+            flink.setCheckpointDir(request.getCheckpointDir());
+        } else if (systemConfig.getFlink() != null) {
+            flink.setCheckpointDir(systemConfig.getFlink().getCheckpointDir());
+        }
         config.setFlink(flink);
-        
+
+        // Audit and reconciliation come from application.yml (system config), not per-job request
+        config.setAudit(systemConfig.getAudit());
+        if (systemConfig.getReconciliation() != null) {
+            ReconciliationConfig recon = systemConfig.getReconciliation();
+            recon.setWindow(ReconciliationConfig.windowFromCheckpointInterval(flink.getCheckpointInterval()));
+            config.setReconciliation(recon);
+        }
+
         return config;
+    }
+
+    private SchemaConfig buildSchemaConfig(String definition, String type, String registryUrl, String subject) {
+        if ((definition == null || definition.isEmpty()) && type == null) {
+            return null;
+        }
+        SchemaConfig schema = new SchemaConfig();
+        schema.setDefinition(definition);
+        schema.setType(type);
+        schema.setRegistryUrl(registryUrl);
+        schema.setSubject(subject);
+        return schema;
+    }
+
+    private void redactPasswords(com.datahondo.flink.streaming.web.model.SavedJobConfig config) {
+        if (config.getSources() != null) {
+            for (com.datahondo.flink.streaming.web.model.SavedJobConfig.SourceSection src : config.getSources()) {
+                if (src.getSourcePassword() != null) src.setSourcePassword(REDACTED);
+            }
+        }
+        if (config.getTarget() != null && config.getTarget().getTargetPassword() != null) {
+            config.getTarget().setTargetPassword(REDACTED);
+        }
     }
 
     private List<com.datahondo.flink.streaming.web.model.SavedJobConfig.SourceSection> mapSourcesToSavedConfig(List<JobRequest.SourceJobRequest> sourceRequests) {
@@ -299,9 +390,13 @@ public class JobController {
                         .sourceStartingOffsetTimestamp(req.getSourceStartingOffsetTimestamp())
                         .sourceTableName(req.getSourceTableName())
                         .sourceSchema(req.getSourceSchema())
+                        .sourceSchemaType(req.getSourceSchemaType())
+                        .sourceSchemaRegistryUrl(req.getSourceSchemaRegistryUrl())
+                        .sourceSchemaSubject(req.getSourceSchemaSubject())
                         .enableWatermark(req.isEnableWatermark())
                         .watermarkMode(req.getWatermarkMode())
                         .watermarkColumn(req.getWatermarkColumn())
+                        .watermarkMaxOutOfOrderness(req.getWatermarkMaxOutOfOrderness())
                         .sourceFormat(req.getSourceFormat())
                         .build());
             }

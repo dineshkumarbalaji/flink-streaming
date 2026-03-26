@@ -51,19 +51,32 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function setupSourceListeners(entry) {
-        // Auth Toggle
+        // Auth Toggle — show all auth-fields when not NONE, show ssl-fields only for SASL_SSL
         const authSelect = entry.querySelector('select[name="sourceAuthType"]');
-        const authFields = entry.querySelectorAll('.auth-field');
+        const authFields = entry.querySelectorAll('.auth-field[data-for="sourceAuthType"]');
+        const sslFields = entry.querySelectorAll('.ssl-field[data-for="sourceAuthType"]');
         authSelect.addEventListener('change', () => {
-            const isAuth = authSelect.value !== 'NONE';
+            const type = authSelect.value;
+            const isAuth = type !== 'NONE';
             authFields.forEach(f => f.classList.toggle('hidden', !isAuth));
+            sslFields.forEach(f => f.classList.toggle('hidden', type !== 'SASL_SSL'));
         });
 
-        // Offset Timestamp Toggle
-        const offsetSelect = entry.querySelector('select[name="sourceStartingOffset"]');
+        // Startup Mode Timestamp Toggle
+        const startupModeSelect = entry.querySelector('select[name="sourceStartupMode"]');
         const timestampGroup = entry.querySelector('.offset-timestamp-group');
-        offsetSelect.addEventListener('change', () => {
-            timestampGroup.classList.toggle('hidden', offsetSelect.value !== 'TIMESTAMP');
+        startupModeSelect.addEventListener('change', () => {
+            timestampGroup.classList.toggle('hidden', startupModeSelect.value !== 'timestamp');
+        });
+
+        // Schema Type Toggle
+        const schemaTypeSelect = entry.querySelector('select[name="sourceSchemaType"]');
+        const schemaDefinitionGroup = entry.querySelector('.source-schema-definition-group');
+        const schemaRegistryGroups = entry.querySelectorAll('.source-schema-registry-group');
+        schemaTypeSelect.addEventListener('change', () => {
+            const v = schemaTypeSelect.value;
+            schemaDefinitionGroup.classList.toggle('hidden', !v || v === 'REGISTRY');
+            schemaRegistryGroups.forEach(g => g.classList.toggle('hidden', v !== 'REGISTRY'));
         });
 
         // Watermark Toggle
@@ -84,18 +97,16 @@ document.addEventListener('DOMContentLoaded', () => {
             });
         });
 
-        // Format Label Change
+        // Format Label Change — update schema label text based on selected format
         const formatSelect = entry.querySelector('select[name="sourceFormat"]');
         const schemaLabel = entry.querySelector('.source-schema-label');
-        const schemaArea = entry.querySelector('textarea[name="sourceSchema"]');
 
         formatSelect.addEventListener('change', () => {
+            if (!schemaLabel) return;
             if (formatSelect.value === 'AVRO') {
-                schemaLabel.textContent = 'Data Schema (AVRO Schema):';
-                schemaArea.placeholder = 'e.g. { "type": "record", ... }';
+                schemaLabel.textContent = 'Schema Definition (AVRO):';
             } else {
-                schemaLabel.textContent = 'Data Schema (JSON Schema):';
-                schemaArea.placeholder = 'e.g. { "type": "object", ... }';
+                schemaLabel.textContent = 'Schema Definition';
             }
         });
     }
@@ -104,15 +115,41 @@ document.addEventListener('DOMContentLoaded', () => {
         entry.querySelector('input[name="sourceBootstrapServers"]').value = data.sourceBootstrapServers || '';
         entry.querySelector('input[name="sourceTopic"]').value = data.sourceTopic || '';
         entry.querySelector('input[name="sourceGroupId"]').value = data.sourceGroupId || '';
-        entry.querySelector('select[name="sourceStartingOffset"]').value = data.sourceStartingOffset || 'EARLIEST';
+
+        // Startup mode — accept both new flink-native values and legacy uppercase values
+        const startupModeEl = entry.querySelector('select[name="sourceStartupMode"]');
+        if (data.sourceStartupMode) {
+            startupModeEl.value = data.sourceStartupMode;
+        } else if (data.sourceStartingOffset) {
+            // Map legacy values to flink-native
+            const legacyMap = {
+                'EARLIEST': 'earliest-offset',
+                'LATEST': 'latest-offset',
+                'GROUP_OFFSETS': 'group-offsets',
+                'TIMESTAMP': 'timestamp'
+            };
+            startupModeEl.value = legacyMap[data.sourceStartingOffset] || 'earliest-offset';
+        }
+
         entry.querySelector('input[name="sourceStartingOffsetTimestamp"]').value = data.sourceStartingOffsetTimestamp || '';
         entry.querySelector('input[name="sourceTableName"]').value = data.sourceTableName || '';
-        entry.querySelector('textarea[name="sourceSchema"]').value = data.sourceSchema || '';
+        entry.querySelector('input[name="sourceAlias"]').value = data.sourceAlias || '';
+
+        // Schema type and related fields
+        const schemaTypeEl = entry.querySelector('select[name="sourceSchemaType"]');
+        schemaTypeEl.value = data.sourceSchemaType || '';
+        const schemaTextarea = entry.querySelector('textarea[name="sourceSchema"]');
+        if (schemaTextarea) schemaTextarea.value = data.sourceSchema || '';
+        entry.querySelector('input[name="sourceSchemaRegistryUrl"]').value = data.sourceSchemaRegistryUrl || '';
+        entry.querySelector('input[name="sourceSchemaSubject"]').value = data.sourceSchemaSubject || '';
 
         entry.querySelector('select[name="sourceAuthType"]').value = data.sourceAuthType || 'NONE';
         entry.querySelector('select[name="sourceMechanism"]').value = data.sourceMechanism || 'PLAIN';
         entry.querySelector('input[name="sourceUsername"]').value = data.sourceUsername || '';
         entry.querySelector('input[name="sourcePassword"]').value = data.sourcePassword || '';
+        entry.querySelector('input[name="sourceTruststoreLocation"]').value = data.sourceTruststoreLocation || '';
+        entry.querySelector('input[name="sourceTruststorePassword"]').value = data.sourceTruststorePassword || '';
+        entry.querySelector('input[name="sourceJaasConfig"]').value = data.sourceJaasConfig || '';
         entry.querySelector('select[name="sourceFormat"]').value = data.sourceFormat || 'STRING';
 
         if (data.enableWatermark) {
@@ -120,11 +157,14 @@ document.addEventListener('DOMContentLoaded', () => {
             const wmRadios = entry.querySelectorAll('input[name="watermarkMode"]');
             wmRadios.forEach(r => { if (r.value === data.watermarkMode) r.checked = true; });
             entry.querySelector('input[name="watermarkColumn"]').value = data.watermarkColumn || '';
+            const outOfOrderEl = entry.querySelector('input[name="watermarkMaxOutOfOrderness"]');
+            if (outOfOrderEl) outOfOrderEl.value = data.watermarkMaxOutOfOrderness !== undefined ? data.watermarkMaxOutOfOrderness : 5000;
         }
 
         // Trigger change events to update UI visibility
         entry.querySelector('select[name="sourceAuthType"]').dispatchEvent(new Event('change'));
-        entry.querySelector('select[name="sourceStartingOffset"]').dispatchEvent(new Event('change'));
+        entry.querySelector('select[name="sourceStartupMode"]').dispatchEvent(new Event('change'));
+        entry.querySelector('select[name="sourceSchemaType"]').dispatchEvent(new Event('change'));
         entry.querySelector('input[name="enableWatermark"]').dispatchEvent(new Event('change'));
         entry.querySelector('select[name="sourceFormat"]').dispatchEvent(new Event('change'));
         entry.querySelectorAll('input[name="watermarkMode"]').forEach(r => { if (r.checked) r.dispatchEvent(new Event('change')); });
@@ -247,6 +287,7 @@ document.addEventListener('DOMContentLoaded', () => {
         data.jobName = document.getElementById('jobName').value;
         data.parallelism = parseInt(document.getElementById('parallelism').value);
         data.checkpointInterval = parseInt(document.getElementById('checkpointInterval').value);
+        data.checkpointDir = document.getElementById('checkpointDir').value || null;
 
         // Sources
         data.sources = [];
@@ -256,13 +297,31 @@ document.addEventListener('DOMContentLoaded', () => {
             src.sourceBootstrapServers = entry.querySelector('input[name="sourceBootstrapServers"]').value;
             src.sourceTopic = entry.querySelector('input[name="sourceTopic"]').value;
             src.sourceGroupId = entry.querySelector('input[name="sourceGroupId"]').value;
-            src.sourceStartingOffset = entry.querySelector('select[name="sourceStartingOffset"]').value;
+
+            // Startup mode (flink-native values) + backward-compat alias
+            const startupMode = entry.querySelector('select[name="sourceStartupMode"]').value;
+            src.sourceStartupMode = startupMode;
+            // Map to legacy sourceStartingOffset for backward compatibility
+            const startupToLegacy = {
+                'earliest-offset': 'EARLIEST',
+                'latest-offset': 'LATEST',
+                'group-offsets': 'GROUP_OFFSETS',
+                'timestamp': 'TIMESTAMP'
+            };
+            src.sourceStartingOffset = startupToLegacy[startupMode] || 'EARLIEST';
 
             const ts = entry.querySelector('input[name="sourceStartingOffsetTimestamp"]').value;
             if (ts) src.sourceStartingOffsetTimestamp = parseInt(ts);
 
             src.sourceTableName = entry.querySelector('input[name="sourceTableName"]').value;
-            src.sourceSchema = entry.querySelector('textarea[name="sourceSchema"]').value;
+            src.sourceAlias = entry.querySelector('input[name="sourceAlias"]').value;
+
+            // Schema fields
+            src.sourceSchemaType = entry.querySelector('select[name="sourceSchemaType"]').value;
+            const schemaTextarea = entry.querySelector('textarea[name="sourceSchema"]');
+            if (schemaTextarea) src.sourceSchema = schemaTextarea.value;
+            src.sourceSchemaRegistryUrl = entry.querySelector('input[name="sourceSchemaRegistryUrl"]').value;
+            src.sourceSchemaSubject = entry.querySelector('input[name="sourceSchemaSubject"]').value;
 
             src.enableWatermark = entry.querySelector('input[name="enableWatermark"]').checked;
             if (src.enableWatermark) {
@@ -270,9 +329,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 src.watermarkMode = checkedMode ? checkedMode.value : 'PROCESS_TIME';
                 if (src.watermarkMode === 'EXISTING') {
                     src.watermarkColumn = entry.querySelector('input[name="watermarkColumn"]').value;
+                    const outOfOrderEl = entry.querySelector('input[name="watermarkMaxOutOfOrderness"]');
+                    if (outOfOrderEl && outOfOrderEl.value !== '') {
+                        src.watermarkMaxOutOfOrderness = parseInt(outOfOrderEl.value);
+                    }
                 }
             } else {
-                src.watermarkMode = 'PROCESS_TIME'; // Default fallbacks
+                src.watermarkMode = 'PROCESS_TIME'; // Default fallback
             }
 
             src.sourceAuthType = entry.querySelector('select[name="sourceAuthType"]').value;
@@ -281,19 +344,31 @@ document.addEventListener('DOMContentLoaded', () => {
                 src.sourceUsername = entry.querySelector('input[name="sourceUsername"]').value;
                 src.sourcePassword = entry.querySelector('input[name="sourcePassword"]').value;
             }
+            if (src.sourceAuthType === 'SASL_SSL') {
+                src.sourceTruststoreLocation = entry.querySelector('input[name="sourceTruststoreLocation"]').value;
+                src.sourceTruststorePassword = entry.querySelector('input[name="sourceTruststorePassword"]').value;
+                src.sourceJaasConfig = entry.querySelector('input[name="sourceJaasConfig"]').value;
+            }
             src.sourceFormat = entry.querySelector('select[name="sourceFormat"]').value;
 
             data.sources.push(src);
         });
 
         // Target
+        data.targetType = document.getElementById('targetType').value;
         data.targetTopic = document.getElementById('targetTopic').value;
         data.targetBootstrapServers = document.getElementById('targetBootstrapServers').value;
 
         // Target Format
         const targetFormatEl = document.getElementById('targetFormat');
         data.targetFormat = targetFormatEl ? targetFormatEl.value : 'STRING';
-        data.targetSchema = document.getElementById('targetSchema').value;
+
+        // Target Schema
+        data.targetSchemaType = document.getElementById('targetSchemaType').value;
+        const targetSchemaEl = document.getElementById('targetSchema');
+        if (targetSchemaEl) data.targetSchema = targetSchemaEl.value;
+        data.targetSchemaRegistryUrl = document.getElementById('targetSchemaRegistryUrl').value;
+        data.targetSchemaSubject = document.getElementById('targetSchemaSubject').value;
 
         const targetAuthType = document.getElementById('targetAuthType').value;
         data.targetAuthType = targetAuthType;
@@ -302,9 +377,22 @@ document.addEventListener('DOMContentLoaded', () => {
             data.targetPassword = document.getElementById('targetPassword').value;
             data.targetMechanism = document.getElementById('targetMechanism').value;
         }
+        if (targetAuthType === 'SASL_SSL') {
+            data.targetTruststoreLocation = document.getElementById('targetTruststoreLocation').value;
+            data.targetTruststorePassword = document.getElementById('targetTruststorePassword').value;
+            data.targetJaasConfig = document.getElementById('targetJaasConfig').value;
+        }
 
         // Transformation
-        data.sqlQuery = document.getElementById('sqlQuery').value;
+        const transformationTypeEl = document.querySelector('input[name="transformationType"]:checked');
+        data.transformationType = transformationTypeEl ? transformationTypeEl.value : 'INLINE';
+
+        if (data.transformationType === 'INLINE') {
+            data.sqlQuery = document.getElementById('sqlQuery').value;
+        } else {
+            data.sqlFilePath = document.getElementById('sqlFilePath').value;
+        }
+
         data.resultTableName = document.getElementById('resultTableName').value;
 
         return data;
@@ -330,12 +418,43 @@ document.addEventListener('DOMContentLoaded', () => {
     if (targetAuthSelect) {
         targetAuthSelect.addEventListener('change', () => {
             const type = targetAuthSelect.value;
-            const fields = document.querySelectorAll(`.auth-field[data-for="targetAuthType"]`);
+            const fields = document.querySelectorAll('.auth-field[data-for="targetAuthType"]');
             fields.forEach(field => {
                 field.classList.toggle('hidden', type === 'NONE');
             });
+            // Show SSL truststore only for SASL_SSL
+            const sslGroup = document.getElementById('targetSslGroup');
+            if (sslGroup) sslGroup.classList.toggle('hidden', type !== 'SASL_SSL');
+            // Also hide truststore password and jaas if not SASL_SSL
+            const targetTruststorePasswordEl = document.getElementById('targetTruststorePassword');
+            const targetJaasConfigEl = document.getElementById('targetJaasConfig');
+            if (targetTruststorePasswordEl) {
+                targetTruststorePasswordEl.closest('.form-group').classList.toggle('hidden', type !== 'SASL_SSL');
+            }
+            if (targetJaasConfigEl) {
+                targetJaasConfigEl.closest('.form-group').classList.toggle('hidden', type !== 'SASL_SSL');
+            }
         });
     }
+
+    // Target Schema Type Toggle
+    const targetSchemaType = document.getElementById('targetSchemaType');
+    if (targetSchemaType) {
+        targetSchemaType.addEventListener('change', () => {
+            const v = targetSchemaType.value;
+            document.getElementById('targetSchemaDefinitionGroup').classList.toggle('hidden', !v || v === 'REGISTRY');
+            document.getElementById('targetSchemaRegistryGroup').classList.toggle('hidden', v !== 'REGISTRY');
+        });
+    }
+
+    // Transformation Type Toggle (INLINE vs FILE)
+    document.querySelectorAll('input[name="transformationType"]').forEach(r => {
+        r.addEventListener('change', () => {
+            const isFile = r.value === 'FILE' && r.checked;
+            document.getElementById('sqlContentGroup').classList.toggle('hidden', isFile);
+            document.getElementById('sqlFileGroup').classList.toggle('hidden', !isFile);
+        });
+    });
 
     function showNotification(message, type) {
         const notification = document.getElementById('notification');
@@ -425,6 +544,7 @@ document.addEventListener('DOMContentLoaded', () => {
         document.getElementById('jobName').value = config.jobName || '';
         document.getElementById('parallelism').value = config.parallelism || 1;
         document.getElementById('checkpointInterval').value = config.checkpointInterval || 60000;
+        document.getElementById('checkpointDir').value = config.checkpointDir || '';
 
         // Populate Sources
         sourcesContainer.innerHTML = ''; // Clear existing
@@ -439,22 +559,54 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // Target
         if (config.target) {
+            const targetTypeEl = document.getElementById('targetType');
+            if (targetTypeEl) targetTypeEl.value = config.target.targetType || 'KAFKA';
+
             document.getElementById('targetBootstrapServers').value = config.target.targetBootstrapServers || '';
             document.getElementById('targetTopic').value = config.target.targetTopic || '';
             document.getElementById('targetAuthType').value = config.target.targetAuthType || 'NONE';
             document.getElementById('targetFormat').value = config.target.targetFormat || 'STRING';
-            document.getElementById('targetSchema').value = config.target.targetSchema || '';
+
+            // Target schema
+            const targetSchemaTypeEl = document.getElementById('targetSchemaType');
+            if (targetSchemaTypeEl) targetSchemaTypeEl.value = config.target.targetSchemaType || '';
+            const targetSchemaEl = document.getElementById('targetSchema');
+            if (targetSchemaEl) targetSchemaEl.value = config.target.targetSchema || '';
+            const targetSchemaRegistryUrlEl = document.getElementById('targetSchemaRegistryUrl');
+            if (targetSchemaRegistryUrlEl) targetSchemaRegistryUrlEl.value = config.target.targetSchemaRegistryUrl || '';
+            const targetSchemaSubjectEl = document.getElementById('targetSchemaSubject');
+            if (targetSchemaSubjectEl) targetSchemaSubjectEl.value = config.target.targetSchemaSubject || '';
+
             document.getElementById('targetUsername').value = config.target.targetUsername || '';
             document.getElementById('targetPassword').value = config.target.targetPassword || '';
             document.getElementById('targetMechanism').value = config.target.targetMechanism || 'PLAIN';
 
+            const targetTruststoreLocationEl = document.getElementById('targetTruststoreLocation');
+            if (targetTruststoreLocationEl) targetTruststoreLocationEl.value = config.target.targetTruststoreLocation || '';
+            const targetTruststorePasswordEl = document.getElementById('targetTruststorePassword');
+            if (targetTruststorePasswordEl) targetTruststorePasswordEl.value = config.target.targetTruststorePassword || '';
+            const targetJaasConfigEl = document.getElementById('targetJaasConfig');
+            if (targetJaasConfigEl) targetJaasConfigEl.value = config.target.targetJaasConfig || '';
+
+            // Dispatch change events to update visibility
             document.getElementById('targetAuthType').dispatchEvent(new Event('change'));
+            if (targetSchemaTypeEl) targetSchemaTypeEl.dispatchEvent(new Event('change'));
         }
 
         // Transformation
         if (config.transformation) {
+            const transformationType = config.transformation.transformationType || 'INLINE';
+            const radioEl = document.querySelector(`input[name="transformationType"][value="${transformationType}"]`);
+            if (radioEl) {
+                radioEl.checked = true;
+                radioEl.dispatchEvent(new Event('change'));
+            }
+
             document.getElementById('sqlQuery').value = config.transformation.sqlQuery || '';
             document.getElementById('resultTableName').value = config.transformation.resultTableName || '';
+
+            const sqlFilePathEl = document.getElementById('sqlFilePath');
+            if (sqlFilePathEl) sqlFilePathEl.value = config.transformation.sqlFilePath || '';
         }
     }
 });

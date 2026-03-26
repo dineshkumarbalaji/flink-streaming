@@ -13,4 +13,10 @@ public class StreamingJobConfig {
     private TransformationConfig transformation;
     private TargetConfig target;
     private FlinkConfig flink;
+
+    /** Optional audit configuration. When null, audit is disabled. */
+    private AuditConfig audit;
+
+    /** Optional reconciliation configuration. When null, reconciliation is disabled. */
+    private ReconciliationConfig reconciliation;
 }

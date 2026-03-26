@@ -28,16 +28,26 @@ public class KafkaValidatorService {
             if ("SASL_SSL".equalsIgnoreCase(auth.getType()) || "SASL_PLAINTEXT".equalsIgnoreCase(auth.getType())) {
                 props.put("security.protocol", auth.getType());
                 props.put("sasl.mechanism", auth.getMechanism());
-                String loginModule = "org.apache.kafka.common.security.plain.PlainLoginModule";
-                if ("SCRAM-SHA-256".equalsIgnoreCase(auth.getMechanism())) {
-                    loginModule = "org.apache.kafka.common.security.scram.ScramLoginModule";
+
+                if (auth.getJaasConfig() != null && !auth.getJaasConfig().isEmpty()) {
+                    props.put("sasl.jaas.config", auth.getJaasConfig());
+                } else {
+                    String loginModule = "SCRAM-SHA-256".equalsIgnoreCase(auth.getMechanism())
+                        ? "org.apache.kafka.common.security.scram.ScramLoginModule"
+                        : "org.apache.kafka.common.security.plain.PlainLoginModule";
+                    props.put("sasl.jaas.config", String.format(
+                        "%s required username=\"%s\" password=\"%s\";",
+                        loginModule, auth.getUsername(), auth.getPassword()
+                    ));
                 }
-                
-                String jaasConfig = String.format(
-                    "%s required username=\"%s\" password=\"%s\";",
-                    loginModule, auth.getUsername(), auth.getPassword()
-                );
-                props.put("sasl.jaas.config", jaasConfig);
+
+                if ("SASL_SSL".equalsIgnoreCase(auth.getType())
+                        && auth.getTruststoreLocation() != null && !auth.getTruststoreLocation().isEmpty()) {
+                    props.put("ssl.truststore.location", auth.getTruststoreLocation());
+                    if (auth.getTruststorePassword() != null) {
+                        props.put("ssl.truststore.password", auth.getTruststorePassword());
+                    }
+                }
             }
         }
 

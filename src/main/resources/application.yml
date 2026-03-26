@@ -1,0 +1,46 @@
+server:
+  port: 8082
+
+spring:
+  application:
+    name: flink-streaming
+
+# Infrastructure-level Flink config (injected into JobController as systemConfig).
+# Per-job values (parallelism, checkpoint interval) are supplied via the REST API at submit time.
+streaming:
+  job:
+    flink:
+      remote: true
+      host: ${FLINK_HOST:jobmanager}
+      port: ${FLINK_PORT:8081}
+      jar-path: ${FLINK_JAR_PATH:/app/flink-job.jar}
+      parallelism: ${FLINK_PARALLELISM:1}
+      checkpoint-interval: ${FLINK_CHECKPOINT_INTERVAL:60000}
+      checkpoint-dir: ${FLINK_CHECKPOINT_DIR:}
+
+    # Audit and reconciliation sink configuration.
+    # Set sink-type to LOG (default), KAFKA, or JDBC.
+    #   connection  → KAFKA: bootstrap servers  | JDBC: jdbc url
+    #   destination → KAFKA: topic name         | JDBC: table name
+    audit:
+      enabled: true
+      sink-type: LOG                        # LOG | KAFKA | JDBC
+      connection:                           # KAFKA: kafka:29092  | JDBC: jdbc:postgresql://db:5432/mydb
+      destination: audit-events             # KAFKA: topic name   | JDBC: table name
+      username:                             # JDBC only
+      password:                             # JDBC only
+
+    reconciliation:
+      enabled: true
+      sink-type: LOG                        # LOG | KAFKA | JDBC
+      connection:                           # KAFKA: kafka:29092  | JDBC: jdbc:postgresql://db:5432/mydb
+      destination: reconciliation-reports   # KAFKA: topic name   | JDBC: table name
+      username:                             # JDBC only
+      password:                             # JDBC only
+      # window is derived from flink.checkpoint-interval automatically
+      tolerance-percent: 0.0
+
+logging:
+  level:
+    com.datahondo: INFO
+    org.apache.flink: WARN
