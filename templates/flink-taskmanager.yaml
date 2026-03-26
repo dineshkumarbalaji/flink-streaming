@@ -1,0 +1,37 @@
+{{- if .Values.flink.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "flink-streaming.fullname" . }}-taskmanager
+  labels:
+    {{- include "flink-streaming.labels" . | nindent 4 }}
+    app.kubernetes.io/component: taskmanager
+spec:
+  replicas: {{ .Values.flink.taskmanager.replicas }}
+  selector:
+    matchLabels:
+      {{- include "flink-streaming.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: taskmanager
+  template:
+    metadata:
+      labels:
+        {{- include "flink-streaming.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: taskmanager
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+      - name: taskmanager
+        image: "{{ .Values.flink.image }}"
+        imagePullPolicy: IfNotPresent
+        command: ["taskmanager"]
+        env:
+        - name: FLINK_PROPERTIES
+          value: |
+            jobmanager.rpc.address: flink-jobmanager
+            taskmanager.numberOfTaskSlots: {{ .Values.flink.taskmanager.numberOfTaskSlots }}
+        resources:
+          {{- toYaml .Values.flink.taskmanager.resources | nindent 12 }}
+{{- end }}

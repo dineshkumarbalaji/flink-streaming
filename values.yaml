@@ -128,15 +128,82 @@ env:
         name: flink-streaming-config
         key: STREAMING_JOB_FLINK_JAR_PATH
 
-# ConfigMap deployed inline (standalone mode — no external Flink cluster in dvx)
+# ConfigMap — points to the in-cluster Flink JobManager and Kafka
 configMap:
   enabled: true
   data:
-    STREAMING_JOB_FLINK_REMOTE: "false"
-    STREAMING_JOB_FLINK_HOST: "localhost"
+    STREAMING_JOB_FLINK_REMOTE: "true"
+    STREAMING_JOB_FLINK_HOST: "flink-jobmanager"
     STREAMING_JOB_FLINK_PORT: "8081"
     STREAMING_JOB_FLINK_JAR_PATH: "/app/flink-job.jar"
 
 secret:
   enabled: false
   data: {}
+
+# ---------------------------------------------------------------------------
+# ZooKeeper — required by Kafka
+# ---------------------------------------------------------------------------
+zookeeper:
+  enabled: true
+  image: "confluentinc/cp-zookeeper:7.5.0"
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# ---------------------------------------------------------------------------
+# Kafka broker
+# ---------------------------------------------------------------------------
+kafka:
+  enabled: true
+  image: "confluentinc/cp-kafka:7.5.0"
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+
+# ---------------------------------------------------------------------------
+# Kafka UI
+# ---------------------------------------------------------------------------
+kafkaUi:
+  enabled: true
+  image: "provectuslabs/kafka-ui:latest"
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+# ---------------------------------------------------------------------------
+# Flink cluster (JobManager + TaskManager)
+# ---------------------------------------------------------------------------
+flink:
+  enabled: true
+  image: "flink:1.18.0-java8"
+  jobmanager:
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        cpu: 1000m
+        memory: 1Gi
+  taskmanager:
+    replicas: 1
+    numberOfTaskSlots: 2
+    resources:
+      requests:
+        cpu: 500m
+        memory: 1Gi
+      limits:
+        cpu: 2000m
+        memory: 2Gi
