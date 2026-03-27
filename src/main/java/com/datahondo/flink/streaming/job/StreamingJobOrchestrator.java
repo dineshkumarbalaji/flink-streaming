@@ -8,6 +8,7 @@ import com.datahondo.flink.streaming.audit.RunContext;
 import com.datahondo.flink.streaming.config.SourceConfig;
 import com.datahondo.flink.streaming.config.StreamingJobConfig;
 import com.datahondo.flink.streaming.source.KafkaSourceLayer;
+import com.datahondo.flink.streaming.source.SourceLayer;
 import com.datahondo.flink.streaming.sink.KafkaTargetLayer;
 import com.datahondo.flink.streaming.sink.TargetLayer;
 import com.datahondo.flink.streaming.transformation.TransformationLayer;
