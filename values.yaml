@@ -28,7 +28,7 @@ serviceAccount:
 
 podAnnotations:
   prometheus.io/scrape: "true"
-  prometheus.io/port: "8080"
+  prometheus.io/port: "8082"
   prometheus.io/path: "/actuator/prometheus"
   loki.io/scrape: "true"
 
@@ -47,7 +47,7 @@ securityContext:
 service:
   type: ClusterIP
   port: 80
-  targetPort: 8080
+  targetPort: 8082
   annotations: {}
 
 ingress:
@@ -86,11 +86,11 @@ tolerations: []
 
 affinity: {}
 
-# Probes — Spring Boot app is on port 8080
+# Probes — Spring Boot app is on port 8082
 livenessProbe:
   httpGet:
     path: /
-    port: 8080
+    port: 8082
   initialDelaySeconds: 60
   periodSeconds: 15
   timeoutSeconds: 5
@@ -99,7 +99,7 @@ livenessProbe:
 readinessProbe:
   httpGet:
     path: /
-    port: 8080
+    port: 8082
   initialDelaySeconds: 30
   periodSeconds: 10
   timeoutSeconds: 3
