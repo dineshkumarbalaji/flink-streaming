@@ -4,6 +4,11 @@ import lombok.Data;
 
 @Data
 public class TargetConfig {
+    /**
+     * Sink type: KAFKA, JDBC, ICEBERG, FILE.
+     * Defaults to KAFKA if not set.
+     */
+    private String type = "KAFKA";
     private KafkaConfig kafka;
-    private String schema;
+    private SchemaConfig schema;
 }

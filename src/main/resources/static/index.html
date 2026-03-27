@@ -169,6 +169,14 @@
                                     step="1000">
                             </div>
                         </div>
+                        <div class="form-row">
+                            <div class="form-group full">
+                                <label for="checkpointDir">Checkpoint Directory (optional)</label>
+                                <input type="text" id="checkpointDir" name="checkpointDir"
+                                    placeholder="e.g. s3://my-bucket/checkpoints or file:///tmp/flink-checkpoints">
+                                <small style="color:#888;">Local paths require three slashes: <code>file:///absolute/path</code></small>
+                            </div>
+                        </div>
                     </section>
 
                     <div class="grid-2">
@@ -209,12 +217,12 @@
                                     </div>
 
                                     <div class="form-group">
-                                        <label>Starting Offset</label>
-                                        <select name="sourceStartingOffset">
-                                            <option value="EARLIEST">Earliest</option>
-                                            <option value="LATEST">Latest</option>
-                                            <option value="GROUP_OFFSETS">Group Offsets (Committed)</option>
-                                            <option value="TIMESTAMP">Timestamp</option>
+                                        <label>Startup Mode</label>
+                                        <select name="sourceStartupMode">
+                                            <option value="earliest-offset">Earliest Offset</option>
+                                            <option value="latest-offset">Latest Offset</option>
+                                            <option value="group-offsets">Group Offsets (Committed)</option>
+                                            <option value="timestamp">Timestamp</option>
                                         </select>
                                     </div>
                                     <div class="form-group hidden offset-timestamp-group">
@@ -228,12 +236,32 @@
                                         <input type="text" name="sourceTableName" placeholder="source_table">
                                     </div>
 
+                                    <div class="form-group">
+                                        <label>Source Alias (for JOIN queries)</label>
+                                        <input type="text" name="sourceAlias" placeholder="e.g. s1 (used as: FROM source_table s1 JOIN ...)">
+                                    </div>
+
                                     <!-- Schema -->
                                     <div class="form-group">
-                                        <label class="source-schema-label">Data Schema (JSON Schema):</label>
-                                        <textarea name="sourceSchema"
-                                            placeholder='e.g. { "type": "object", "properties": { "id": {"type": "integer"} } }'></textarea>
-                                        <small>Optional. Used for validation.</small>
+                                        <label>Schema Type</label>
+                                        <select name="sourceSchemaType">
+                                            <option value="">None</option>
+                                            <option value="JSON">JSON Schema</option>
+                                            <option value="AVRO">Avro Schema</option>
+                                            <option value="REGISTRY">Schema Registry</option>
+                                        </select>
+                                    </div>
+                                    <div class="form-group hidden source-schema-definition-group">
+                                        <label class="source-schema-label">Schema Definition</label>
+                                        <textarea name="sourceSchema" placeholder='e.g. { "type": "object", "properties": { "id": {"type": "integer"} } }'></textarea>
+                                    </div>
+                                    <div class="form-group hidden source-schema-registry-group">
+                                        <label>Schema Registry URL</label>
+                                        <input type="text" name="sourceSchemaRegistryUrl" placeholder="http://schema-registry:8081">
+                                    </div>
+                                    <div class="form-group hidden source-schema-registry-group">
+                                        <label>Schema Subject</label>
+                                        <input type="text" name="sourceSchemaSubject" placeholder="e.g. my-topic-value">
                                     </div>
 
                                     <!-- Watermark Configuration -->
@@ -262,6 +290,8 @@
                                         <div class="form-group hidden watermark-column-group">
                                             <label>Timestamp Column Name</label>
                                             <input type="text" name="watermarkColumn" placeholder="e.g. event_time">
+                                            <label style="margin-top:0.5rem;">Max Out-of-Orderness (ms)</label>
+                                            <input type="number" name="watermarkMaxOutOfOrderness" placeholder="5000" value="5000" min="0">
                                         </div>
                                     </div>
 
@@ -298,12 +328,35 @@
                                         <label>Password</label>
                                         <input type="password" name="sourcePassword">
                                     </div>
+                                    <div class="form-group ssl-field hidden" data-for="sourceAuthType">
+                                        <label>Truststore Location (SASL_SSL)</label>
+                                        <input type="text" name="sourceTruststoreLocation" placeholder="/etc/kafka/certs/truststore.jks">
+                                    </div>
+                                    <div class="form-group ssl-field hidden" data-for="sourceAuthType">
+                                        <label>Truststore Password</label>
+                                        <input type="password" name="sourceTruststorePassword">
+                                    </div>
+                                    <div class="form-group ssl-field hidden" data-for="sourceAuthType">
+                                        <label>Custom JAAS Config (optional override)</label>
+                                        <input type="text" name="sourceJaasConfig" placeholder="Leave blank to auto-generate from credentials">
+                                    </div>
                                 </div>
                             </template>
                         </section>
 
                         <section class="form-section">
                             <h2>Target (Kafka)</h2>
+
+                            <div class="form-group">
+                                <label for="targetType">Sink Type</label>
+                                <select id="targetType" name="targetType">
+                                    <option value="KAFKA">Kafka</option>
+                                    <option value="JDBC" disabled>JDBC (coming soon)</option>
+                                    <option value="ICEBERG" disabled>Iceberg (coming soon)</option>
+                                    <option value="FILE" disabled>File (coming soon)</option>
+                                </select>
+                            </div>
+
                             <div class="form-group">
                                 <label for="targetBootstrapServers">Bootstrap Servers</label>
                                 <input type="text" id="targetBootstrapServers" name="targetBootstrapServers"
@@ -334,9 +387,23 @@
                             </div>
 
                             <div class="form-group">
-                                <label for="targetSchema">Target Schema (Optional/Required for Avro):</label>
-                                <textarea id="targetSchema" name="targetSchema"
-                                    placeholder='e.g. { "type": "record", "name": "User", "fields": [...] }'></textarea>
+                                <label for="targetSchemaType">Schema Type</label>
+                                <select id="targetSchemaType" name="targetSchemaType">
+                                    <option value="">None</option>
+                                    <option value="JSON">JSON Schema</option>
+                                    <option value="AVRO">Avro Schema</option>
+                                    <option value="REGISTRY">Schema Registry</option>
+                                </select>
+                            </div>
+                            <div class="form-group hidden" id="targetSchemaDefinitionGroup">
+                                <label for="targetSchema">Schema Definition</label>
+                                <textarea id="targetSchema" name="targetSchema" placeholder='e.g. { "type": "record", "name": "User", "fields": [...] }'></textarea>
+                            </div>
+                            <div class="form-group hidden" id="targetSchemaRegistryGroup">
+                                <label for="targetSchemaRegistryUrl">Schema Registry URL</label>
+                                <input type="text" id="targetSchemaRegistryUrl" name="targetSchemaRegistryUrl" placeholder="http://schema-registry:8081">
+                                <label for="targetSchemaSubject" style="margin-top:0.5rem;">Schema Subject</label>
+                                <input type="text" id="targetSchemaSubject" name="targetSchemaSubject" placeholder="e.g. my-output-topic-value">
                             </div>
 
                             <!-- Auth Details (Hidden by default) -->
@@ -355,12 +422,39 @@
                                 <label for="targetPassword">Password</label>
                                 <input type="password" id="targetPassword" name="targetPassword">
                             </div>
+                            <div class="form-group auth-field hidden" data-for="targetAuthType" id="targetSslGroup">
+                                <label for="targetTruststoreLocation">Truststore Location (SASL_SSL)</label>
+                                <input type="text" id="targetTruststoreLocation" name="targetTruststoreLocation" placeholder="/etc/kafka/certs/truststore.jks">
+                            </div>
+                            <div class="form-group auth-field hidden" data-for="targetAuthType">
+                                <label for="targetTruststorePassword">Truststore Password</label>
+                                <input type="password" id="targetTruststorePassword" name="targetTruststorePassword">
+                            </div>
+                            <div class="form-group auth-field hidden" data-for="targetAuthType">
+                                <label for="targetJaasConfig">Custom JAAS Config (optional override)</label>
+                                <input type="text" id="targetJaasConfig" name="targetJaasConfig" placeholder="Leave blank to auto-generate from credentials">
+                            </div>
                         </section>
                     </div>
 
                     <section class="form-section full-width">
                         <h2>Transformation Logic (SQL)</h2>
+
                         <div class="form-group">
+                            <label>SQL Source Type</label>
+                            <div class="radio-group" style="flex-direction:row; gap:1.5rem; margin-top:0.25rem;">
+                                <label class="radio-container">
+                                    <input type="radio" name="transformationType" value="INLINE" checked>
+                                    <span class="radio-mark"></span> Inline SQL
+                                </label>
+                                <label class="radio-container">
+                                    <input type="radio" name="transformationType" value="FILE">
+                                    <span class="radio-mark"></span> SQL File
+                                </label>
+                            </div>
+                        </div>
+
+                        <div class="form-group" id="sqlContentGroup">
                             <div class="editor-header">
                                 <label for="sqlQuery">SQL Query</label>
                                 <span class="hint">Use table names from source/target config. Default source table is
@@ -369,6 +463,12 @@
                             <textarea id="sqlQuery" name="sqlQuery" rows="10"
                                 placeholder="SELECT * FROM source_table WHERE amount > 1000" required></textarea>
                         </div>
+
+                        <div class="form-group hidden" id="sqlFileGroup">
+                            <label for="sqlFilePath">SQL File Path (on server)</label>
+                            <input type="text" id="sqlFilePath" name="sqlFilePath" placeholder="/app/queries/transform.sql">
+                        </div>
+
                         <div class="form-group">
                             <label for="resultTableName">Result Table Name</label>
                             <input type="text" id="resultTableName" name="resultTableName" value="result_view" required>

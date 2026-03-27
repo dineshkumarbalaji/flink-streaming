@@ -17,12 +17,27 @@ public class TransformationLayer {
             TransformationConfig config) throws Exception {
         
         String sql;
-        if (config.getSqlContent() != null && !config.getSqlContent().isEmpty()) {
-            log.info("Using provided SQL content");
-            sql = config.getSqlContent();
-        } else {
+        String type = config.getType();
+        if ("FILE".equalsIgnoreCase(type)) {
+            if (config.getSqlFilePath() == null || config.getSqlFilePath().isEmpty()) {
+                throw new IllegalArgumentException("Transformation type is FILE but sqlFilePath is not set");
+            }
             log.info("Loading SQL from file: {}", config.getSqlFilePath());
             sql = new String(Files.readAllBytes(Paths.get(config.getSqlFilePath())));
+        } else if ("INLINE".equalsIgnoreCase(type) || type == null) {
+            if (config.getSqlContent() == null || config.getSqlContent().isEmpty()) {
+                if (config.getSqlFilePath() != null && !config.getSqlFilePath().isEmpty()) {
+                    log.info("sqlContent empty, falling back to file: {}", config.getSqlFilePath());
+                    sql = new String(Files.readAllBytes(Paths.get(config.getSqlFilePath())));
+                } else {
+                    throw new IllegalArgumentException("No SQL provided: set type=INLINE with sqlContent, or type=FILE with sqlFilePath");
+                }
+            } else {
+                log.info("Using inline SQL content");
+                sql = config.getSqlContent();
+            }
+        } else {
+            throw new IllegalArgumentException("Unknown transformation type: " + type + ". Must be INLINE or FILE");
         }
         
         log.info("Executing transformation SQL:\n{}", sql);

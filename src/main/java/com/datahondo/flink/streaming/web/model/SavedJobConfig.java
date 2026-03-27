@@ -36,11 +36,15 @@ public class SavedJobConfig {
         private Long sourceStartingOffsetTimestamp;
         private String sourceTableName;
         private String sourceSchema;
+        private String sourceSchemaType;
+        private String sourceSchemaRegistryUrl;
+        private String sourceSchemaSubject;
         private String sourceFormat; // STRING, JSON, AVRO
         
         private boolean enableWatermark;
         private String watermarkMode;
         private String watermarkColumn;
+        private Long watermarkMaxOutOfOrderness;
     }
 
     @Data
@@ -65,5 +69,8 @@ public class SavedJobConfig {
         private String targetMechanism;
         private String targetFormat; // STRING, JSON, AVRO
         private String targetSchema;
+        private String targetSchemaType;
+        private String targetSchemaRegistryUrl;
+        private String targetSchemaSubject;
     }
 }

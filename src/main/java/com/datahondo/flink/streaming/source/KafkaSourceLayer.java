@@ -4,6 +4,7 @@ import com.datahondo.flink.streaming.config.AuthConfig;
 import com.datahondo.flink.streaming.config.KafkaConfig;
 import com.datahondo.flink.streaming.config.SourceConfig;
 import com.datahondo.flink.streaming.config.WatermarkConfig;
+import org.apache.kafka.clients.consumer.OffsetResetStrategy;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.networknt.schema.JsonSchema;
@@ -35,7 +36,9 @@ import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.apache.flink.types.Row;
 import org.apache.flink.util.Collector;
+import com.datahondo.flink.streaming.audit.AuditAccumulators;
 import com.datahondo.flink.streaming.exception.SchemaException;
+import org.apache.flink.api.common.accumulators.LongCounter;
 import org.springframework.stereotype.Component;
 
 import java.io.Serializable;
@@ -43,14 +46,16 @@ import java.util.*;
 
 @Slf4j
 @Component
-public class KafkaSourceLayer {
+public class KafkaSourceLayer implements SourceLayer {
 
     private static final String TYPE_STRING = "STRING";
     private static final String TYPE_INT = "INT";
+    private static final String TYPE_LONG = "LONG";
     private static final String TYPE_DOUBLE = "DOUBLE";
     private static final String TYPE_BOOLEAN = "BOOLEAN";
+    private static final String TYPE_TIMESTAMP = "TIMESTAMP";
     
-    // ... (keep createSourceTable signature)
+    @Override
     public Table createSourceTable(
             StreamExecutionEnvironment env,
             StreamTableEnvironment tableEnv,
@@ -61,17 +66,38 @@ public class KafkaSourceLayer {
         // Build Kafka properties
         Properties kafkaProps = buildKafkaProperties(sourceConfig.getKafka());
         
-        // Determine Offset Strategy
+        // Determine Offset Strategy — startupMode (Flink-native) takes priority over startingOffset
         OffsetsInitializer offsetsInitializer = OffsetsInitializer.earliest();
+        String startupMode = sourceConfig.getKafka().getStartupMode();
         String offsetStrategy = sourceConfig.getKafka().getStartingOffset();
-        
-        if (offsetStrategy != null) {
-            switch (offsetStrategy) {
+
+        if (startupMode != null) {
+            switch (startupMode.toLowerCase()) {
+                case "latest-offset":
+                    offsetsInitializer = OffsetsInitializer.latest();
+                    break;
+                case "group-offsets":
+                    offsetsInitializer = OffsetsInitializer.committedOffsets(OffsetResetStrategy.EARLIEST);
+                    break;
+                case "timestamp":
+                    if (sourceConfig.getKafka().getStartingOffsetTimestamp() != null) {
+                        offsetsInitializer = OffsetsInitializer.timestamp(sourceConfig.getKafka().getStartingOffsetTimestamp());
+                    } else {
+                        log.warn("startupMode=timestamp but no startingOffsetTimestamp provided. Defaulting to earliest.");
+                    }
+                    break;
+                case "earliest-offset":
+                default:
+                    offsetsInitializer = OffsetsInitializer.earliest();
+            }
+            log.info("Using startupMode '{}' for topic {}", startupMode, sourceConfig.getKafka().getTopic());
+        } else if (offsetStrategy != null) {
+            switch (offsetStrategy.toUpperCase()) {
                 case "LATEST":
                     offsetsInitializer = OffsetsInitializer.latest();
                     break;
                 case "GROUP_OFFSETS":
-                    offsetsInitializer = OffsetsInitializer.committedOffsets(OffsetsInitializer.earliest().getAutoOffsetResetStrategy());
+                    offsetsInitializer = OffsetsInitializer.committedOffsets(OffsetResetStrategy.EARLIEST);
                     break;
                 case "TIMESTAMP":
                     if (sourceConfig.getKafka().getStartingOffsetTimestamp() != null) {
@@ -102,14 +128,15 @@ public class KafkaSourceLayer {
         );
         
         DataStream<String> rawStream = env
-                .fromSource(kafkaSource, watermarkStrategy, "Kafka Source")
+                .fromSource(kafkaSource, watermarkStrategy,
+                        "Source: Kafka [" + sourceConfig.getKafka().getTopic() + "]")
                 .uid("kafka-source-" + sourceConfig.getKafka().getTopic());
         
         Table sourceTable;
         String format = sourceConfig.getKafka().getFormat();
         
         // Handle Schema Validation: Apply if format is JSON/AVRO and Schema is present
-        boolean useValidation = (sourceConfig.getSchema() != null && !sourceConfig.getSchema().isEmpty());
+        boolean useValidation = (sourceConfig.getSchema() != null && sourceConfig.getSchema().hasDefinition());
 
         if (!useValidation) {
 
@@ -128,26 +155,27 @@ public class KafkaSourceLayer {
                 sourceTable = tableEnv.fromDataStream(monitoredRawStream);
             }
         } else {
-            log.info("Using schema validation: {} for format {}", sourceConfig.getSchema(), format);
+            String schemaDefinition = sourceConfig.getSchema().getDefinition();
+            log.info("Using schema validation: type={}, format={}", sourceConfig.getSchema().getType(), format);
 
             SingleOutputStreamOperator<Row> validatedStream;
             List<FieldDefinition> fields;
 
             if ("AVRO".equalsIgnoreCase(format)) {
-                 fields = parseAvroSchemaString(sourceConfig.getSchema());
+                 fields = parseAvroSchemaString(schemaDefinition);
                  RowTypeInfo rowTypeInfo = createRowTypeInfo(fields);
 
                  validatedStream = rawStream
-                    .flatMap(new AvroSchemaValidator(fields, sourceConfig.getSchema()))
+                    .flatMap(new AvroSchemaValidator(fields, schemaDefinition, sourceConfig.getTableName()))
                     .returns(rowTypeInfo)
                     .uid("avro-schema-validator");
 
             } else {
-                 fields = parseSchemaString(sourceConfig.getSchema());
+                 fields = parseSchemaString(schemaDefinition);
                  RowTypeInfo rowTypeInfo = createRowTypeInfo(fields);
 
                  validatedStream = rawStream
-                    .flatMap(new SchemaValidator(fields, sourceConfig.getSchema()))
+                    .flatMap(new SchemaValidator(fields, schemaDefinition, sourceConfig.getTableName()))
                     .returns(rowTypeInfo)
                     .uid("schema-validator");
             }
@@ -176,10 +204,16 @@ public class KafkaSourceLayer {
         }
         String mode = config.getWatermark().getMode();
         if ("PROCESS_TIME".equalsIgnoreCase(mode)) {
-             builder.columnByExpression("processed_time", "PROCTIME()");
+            builder.columnByExpression("processed_time", "PROCTIME()");
+            // No watermark needed for processing-time — PROCTIME() is not an event-time attribute
         } else if ("EXISTING".equalsIgnoreCase(mode) && config.getWatermark().getTimestampColumn() != null) {
-             String col = config.getWatermark().getTimestampColumn();
-             builder.watermark(col, col + " - INTERVAL '5' SECOND");
+            String col = config.getWatermark().getTimestampColumn();
+            long lagSeconds = Math.max(config.getWatermark().getMaxOutOfOrderness() / 1000, 0);
+            String watermarkSql = String.format(
+                "%s - INTERVAL '%d' SECOND", col, lagSeconds
+            );
+            log.info("Applying watermark on column '{}' with lag {}s", col, lagSeconds);
+            builder.watermark(col, watermarkSql);
         }
     }
 
@@ -247,13 +281,12 @@ public class KafkaSourceLayer {
                  }
                  
                  switch (avroType) {
-                     case INT:
-                     case LONG:
-                         type = TYPE_INT; break;
+                     case INT: type = TYPE_INT; break;
+                     case LONG: type = TYPE_LONG; break;
                      case DOUBLE:
                      case FLOAT:
                          type = TYPE_DOUBLE; break;
-                     case BOOLEAN: type = TYPE_BOOLEAN; break; // Map LONG to INT for now
+                     case BOOLEAN: type = TYPE_BOOLEAN; break;
                      default: type = TYPE_STRING;
                  }
                  fields.add(new FieldDefinition(field.name(), type));
@@ -271,17 +304,12 @@ public class KafkaSourceLayer {
         for (int i = 0; i < fields.size(); i++) {
             names[i] = fields.get(i).name;
             switch (fields.get(i).type) {
-                case TYPE_INT:
-                    types[i] = Types.INT;
-                    break;
-                case TYPE_DOUBLE:
-                    types[i] = Types.DOUBLE;
-                    break;
-                case TYPE_BOOLEAN:
-                    types[i] = Types.BOOLEAN;
-                    break;
-                default:
-                    types[i] = Types.STRING;
+                case TYPE_INT: types[i] = Types.INT; break;
+                case TYPE_LONG: types[i] = Types.LONG; break;
+                case TYPE_DOUBLE: types[i] = Types.DOUBLE; break;
+                case TYPE_BOOLEAN: types[i] = Types.BOOLEAN; break;
+                case TYPE_TIMESTAMP: types[i] = Types.SQL_TIMESTAMP; break;
+                default: types[i] = Types.STRING;
             }
         }
         return new RowTypeInfo(types, names);
@@ -290,8 +318,10 @@ public class KafkaSourceLayer {
     private org.apache.flink.table.types.DataType mapToDataType(String type) {
         switch (type) {
             case TYPE_INT: return DataTypes.INT();
+            case TYPE_LONG: return DataTypes.BIGINT();
             case TYPE_DOUBLE: return DataTypes.DOUBLE();
             case TYPE_BOOLEAN: return DataTypes.BOOLEAN();
+            case TYPE_TIMESTAMP: return DataTypes.TIMESTAMP(3);
             default: return DataTypes.STRING();
         }
     }
@@ -299,22 +329,30 @@ public class KafkaSourceLayer {
     public static class SchemaValidator extends RichFlatMapFunction<String, Row> {
         private final List<FieldDefinition> fields;
         private final String schemaStr;
-        
-        private transient ObjectMapper objectMapper;
-        private transient JsonSchema jsonSchema; 
-        private transient org.apache.flink.metrics.Counter counter;
+        private final String tableName;
 
-        public SchemaValidator(List<FieldDefinition> fields, String schemaStr) {
+        private transient ObjectMapper objectMapper;
+        private transient JsonSchema jsonSchema;
+        private transient LongCounter readCounter;
+        private transient LongCounter rejectedCounter;
+
+        public SchemaValidator(List<FieldDefinition> fields, String schemaStr, String tableName) {
             this.fields = fields;
             this.schemaStr = schemaStr;
+            this.tableName = tableName;
+        }
+
+        public SchemaValidator(List<FieldDefinition> fields, String schemaStr) {
+            this(fields, schemaStr, "unknown");
         }
 
         public SchemaValidator(List<FieldDefinition> fields) {
-           this(fields, null);
+            this(fields, null, "unknown");
         }
 
         public void open(Configuration parameters) {
-            this.counter = getRuntimeContext().getMetricGroup().counter("records-consumed");
+            readCounter     = getRuntimeContext().getLongCounter(AuditAccumulators.sourceRead(tableName));
+            rejectedCounter = getRuntimeContext().getLongCounter(AuditAccumulators.sourceRejected(tableName));
             objectMapper = new ObjectMapper();
             if (schemaStr != null) {
                 try {
@@ -336,6 +374,7 @@ public class KafkaSourceLayer {
                     Set<ValidationMessage> errors = jsonSchema.validate(node);
                     if (!errors.isEmpty()) {
                         log.error("Invalid JSON Record: {} Errors: {}", value, errors);
+                        rejectedCounter.add(1L);
                         return;
                     }
                 }
@@ -367,14 +406,16 @@ public class KafkaSourceLayer {
                         }
                     } catch (Exception e) {
                         log.error("Type Conversion Error for field {}: {}", field.name, e.getMessage());
+                        rejectedCounter.add(1L);
                         return;
                     }
                 }
                 out.collect(row);
-                if (this.counter != null) this.counter.inc();
-                
+                readCounter.add(1L);
+
             } catch (Exception e) {
                 log.error("Malformed JSON: {}", value);
+                rejectedCounter.add(1L);
             }
         }
     }
@@ -382,19 +423,27 @@ public class KafkaSourceLayer {
     public static class AvroSchemaValidator extends RichFlatMapFunction<String, Row> {
         private final List<FieldDefinition> fields;
         private final String schemaStr;
-        
+        private final String tableName;
+
         private transient org.apache.avro.Schema avroSchema;
-        private transient org.apache.flink.metrics.Counter counter;
+        private transient LongCounter readCounter;
+        private transient LongCounter rejectedCounter;
         private transient DatumReader<GenericRecord> reader;
 
-        public AvroSchemaValidator(List<FieldDefinition> fields, String schemaStr) {
+        public AvroSchemaValidator(List<FieldDefinition> fields, String schemaStr, String tableName) {
             this.fields = fields;
             this.schemaStr = schemaStr;
+            this.tableName = tableName;
+        }
+
+        public AvroSchemaValidator(List<FieldDefinition> fields, String schemaStr) {
+            this(fields, schemaStr, "unknown");
         }
 
         @Override
         public void open(Configuration parameters) {
-            this.counter = getRuntimeContext().getMetricGroup().counter("records-consumed");
+            readCounter     = getRuntimeContext().getLongCounter(AuditAccumulators.sourceRead(tableName));
+            rejectedCounter = getRuntimeContext().getLongCounter(AuditAccumulators.sourceRejected(tableName));
             if (schemaStr != null) {
                 try {
                     this.avroSchema = new Parser().parse(schemaStr);
@@ -432,10 +481,11 @@ public class KafkaSourceLayer {
                      row.setField(i, val);
                  }
                  out.collect(row);
-                 if (this.counter != null) this.counter.inc();
-                 
+                 readCounter.add(1L);
+
             } catch (Exception e) {
                 log.error("Malformed Avro/JSON Record: {} Error: {}", value, e.getMessage());
+                rejectedCounter.add(1L);
             }
         }
     }
@@ -443,18 +493,21 @@ public class KafkaSourceLayer {
     // ... keep MetricReportingMapFunction and rest ...
 
     public static class MetricReportingMapFunction extends org.apache.flink.api.common.functions.RichMapFunction<String, String> {
-        private transient org.apache.flink.metrics.Counter counter;
+        // Metric counter for Flink UI visibility (no-schema path)
+        private transient org.apache.flink.metrics.Counter metricCounter;
+        // Accumulator for orchestrator-side reconciliation reads
+        private transient LongCounter readCounter;
 
         @Override
         public void open(Configuration parameters) {
-            this.counter = getRuntimeContext().getMetricGroup().counter("records-consumed");
+            metricCounter = getRuntimeContext().getMetricGroup().counter("records-consumed");
+            readCounter   = getRuntimeContext().getLongCounter(AuditAccumulators.SOURCE_READ_ALL);
         }
 
         @Override
         public String map(String value) {
-            if (this.counter != null) {
-                this.counter.inc();
-            }
+            metricCounter.inc();
+            readCounter.add(1L);
             return value;
         }
     }
@@ -471,25 +524,39 @@ public class KafkaSourceLayer {
         if (kafkaConfig.getAuthentication() != null) {
             AuthConfig auth = kafkaConfig.getAuthentication();
             
-            if ("SASL_SSL".equalsIgnoreCase(auth.getType()) || 
+            if ("SASL_SSL".equalsIgnoreCase(auth.getType()) ||
                 "SASL_PLAINTEXT".equalsIgnoreCase(auth.getType())) {
-                
+
                 props.put("security.protocol", auth.getType());
                 props.put("sasl.mechanism", auth.getMechanism());
-                
-                String loginModule = "org.apache.kafka.common.security.plain.PlainLoginModule";
-                if ("SCRAM-SHA-256".equalsIgnoreCase(auth.getMechanism())) {
-                    loginModule = "org.apache.kafka.common.security.scram.ScramLoginModule";
+
+                // Use explicit jaasConfig override if provided, otherwise build from credentials
+                if (auth.getJaasConfig() != null && !auth.getJaasConfig().isEmpty()) {
+                    props.put("sasl.jaas.config", auth.getJaasConfig());
+                } else {
+                    String loginModule = "SCRAM-SHA-256".equalsIgnoreCase(auth.getMechanism())
+                        ? "org.apache.kafka.common.security.scram.ScramLoginModule"
+                        : "org.apache.kafka.common.security.plain.PlainLoginModule";
+                    props.put("sasl.jaas.config", String.format(
+                        "%s required username=\"%s\" password=\"%s\";",
+                        loginModule, auth.getUsername(), auth.getPassword()
+                    ));
                 }
-                
-                String jaasConfig = String.format(
-                    "%s required username=\"%s\" password=\"%s\";",
-                    loginModule, auth.getUsername(), auth.getPassword()
-                );
-                props.put("sasl.jaas.config", jaasConfig);
+
+                // SSL truststore (required for SASL_SSL)
+                if ("SASL_SSL".equalsIgnoreCase(auth.getType())) {
+                    if (auth.getTruststoreLocation() != null && !auth.getTruststoreLocation().isEmpty()) {
+                        props.put("ssl.truststore.location", auth.getTruststoreLocation());
+                        if (auth.getTruststorePassword() != null) {
+                            props.put("ssl.truststore.password", auth.getTruststorePassword());
+                        }
+                    } else {
+                        log.warn("SASL_SSL configured but truststoreLocation is not set");
+                    }
+                }
             }
         }
-        
+
         return props;
     }
     
@@ -497,15 +564,22 @@ public class KafkaSourceLayer {
         if (config == null || "NONE".equalsIgnoreCase(config.getStrategy())) {
             return WatermarkStrategy.noWatermarks();
         }
-        
+
         if ("BOUNDED".equalsIgnoreCase(config.getStrategy())) {
-            return WatermarkStrategy
-                    .<String>forBoundedOutOfOrderness(
-                            java.time.Duration.ofMillis(config.getMaxOutOfOrderness())
-                     )
-                    .withTimestampAssigner((event, timestamp) -> System.currentTimeMillis());
+            // PROCESS_TIME: assign ingestion time at stream level so PROCTIME() works in Table API.
+            // EXISTING: watermark comes from an event-time column declared in the Table schema via
+            // applyWatermarkToSchema(); the stream layer must not override the timestamp with
+            // System.currentTimeMillis(), so we emit no watermarks here.
+            if ("PROCESS_TIME".equalsIgnoreCase(config.getMode())) {
+                return WatermarkStrategy
+                        .<String>forBoundedOutOfOrderness(
+                                java.time.Duration.ofMillis(config.getMaxOutOfOrderness()))
+                        .withTimestampAssigner((event, timestamp) -> System.currentTimeMillis());
+            }
+            // EXISTING mode — Table schema watermark handles this; no stream-level timestamp assignment
+            return WatermarkStrategy.noWatermarks();
         }
-        
+
         return WatermarkStrategy.noWatermarks();
     }
 }
