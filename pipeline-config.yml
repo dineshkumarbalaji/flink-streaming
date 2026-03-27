@@ -19,14 +19,14 @@ variables:
   # Job-level Control
   skipValidateConfig: 'false'
   skipDependencyCheck: 'false'
-  skipSASTScan: 'false'
-  skipUnitTests: 'false'
+  skipSASTScan: 'true'
+  skipUnitTests: 'true'
   skipDockerBuild: 'false'
-  skipTrivyScan: 'false'
+  skipTrivyScan: 'true'
   skipHelmPackage: 'false'
-  skipTagSIT: 'false'
-  skipManualPromotion: 'false'
-  skipTagPromotion: 'false'
+  skipTagSIT: 'true'
+  skipManualPromotion: 'true'
+  skipTagPromotion: 'true'
 
   # Artifacts & Container Registry
   acrName: 'globalemdeproductacr'

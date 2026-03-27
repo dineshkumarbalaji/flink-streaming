@@ -1,78 +1,204 @@
 package com.datahondo.flink.streaming.sink;
 
+import com.datahondo.flink.streaming.audit.AuditAccumulators;
+import com.datahondo.flink.streaming.audit.AuditCountingMapFunction;
 import com.datahondo.flink.streaming.config.AuthConfig;
 import com.datahondo.flink.streaming.config.KafkaConfig;
 import com.datahondo.flink.streaming.config.TargetConfig;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import lombok.extern.slf4j.Slf4j;
-import org.apache.flink.api.common.functions.RichMapFunction;
-import org.apache.flink.api.common.serialization.SimpleStringSchema;
+import org.apache.flink.api.common.accumulators.LongCounter;
 import org.apache.flink.configuration.Configuration;
-import org.apache.flink.connector.base.DeliveryGuarantee;
 import org.apache.flink.connector.kafka.sink.KafkaRecordSerializationSchema;
 import org.apache.flink.connector.kafka.sink.KafkaSink;
 import org.apache.flink.streaming.api.datastream.DataStream;
+import org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
-import org.apache.flink.table.catalog.ResolvedSchema;
 import org.apache.flink.types.Row;
 import org.springframework.stereotype.Component;
-
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
+import lombok.extern.slf4j.Slf4j;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import java.util.Properties;
+import java.io.ByteArrayOutputStream;
+import org.apache.avro.generic.GenericRecord;
+import org.apache.avro.generic.GenericData;
+import org.apache.avro.Schema;
+import org.apache.avro.io.Encoder;
+import org.apache.avro.io.EncoderFactory;
+import org.apache.avro.generic.GenericDatumWriter;
 
 @Slf4j
 @Component
-public class KafkaTargetLayer {
+public class KafkaTargetLayer implements TargetLayer {
 
-    public void sinkToKafka(StreamTableEnvironment tableEnv, Table transformedTable, TargetConfig config) {
-        log.info("Creating Kafka sink for topic: {}, Format: {}",
-                config.getKafka().getTopic(), config.getKafka().getFormat());
+    private static final String FORMAT_JSON = "JSON";
+    private static final String FORMAT_AVRO = "AVRO";
 
-        // Capture column names from the resolved schema before converting to DataStream
-        ResolvedSchema schema = transformedTable.getResolvedSchema();
-        List<String> columnNames = schema.getColumnNames();
-        String[] fieldNames = columnNames.toArray(new String[0]);
+    private static final ObjectMapper JSON_MAPPER = new ObjectMapper()
+            .registerModule(new JavaTimeModule())
+            .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
 
-        // Convert Table to DataStream<Row>
-        DataStream<Row> rowStream = tableEnv.toDataStream(transformedTable);
+    @Override
+    public String getSinkType() {
+        return "KAFKA";
+    }
 
-        // Serialize rows to strings based on output format
-        String format = config.getKafka().getFormat();
-        DataStream<String> outputStream;
+    @Override
+    public void sink(
+            StreamTableEnvironment tableEnv,
+            Table resultTable,
+            TargetConfig targetConfig) {
 
-        if ("JSON".equalsIgnoreCase(format)) {
-            outputStream = rowStream
-                    .map(new RowToJsonMapper(fieldNames))
-                    .uid("row-to-json-" + config.getKafka().getTopic());
-        } else {
-            // STRING or default
-            outputStream = rowStream
-                    .map(new RowToStringMapper())
-                    .uid("row-to-string-" + config.getKafka().getTopic());
-        }
+        log.info("Creating Kafka sink for topic: {}, Format: {}", targetConfig.getKafka().getTopic(), targetConfig.getKafka().getFormat());
 
-        // Build Kafka producer properties (auth + custom)
-        Properties kafkaProps = buildKafkaProperties(config.getKafka());
+        // Build Kafka properties
+        Properties kafkaProps = buildKafkaProperties(targetConfig.getKafka());
 
-        KafkaSink<String> sink = KafkaSink.<String>builder()
-                .setBootstrapServers(config.getKafka().getBootstrapServers())
-                .setRecordSerializer(KafkaRecordSerializationSchema.builder()
-                        .setTopic(config.getKafka().getTopic())
-                        .setValueSerializationSchema(new SimpleStringSchema())
-                        .build())
+        String format = targetConfig.getKafka().getFormat();
+
+        // Use byte[] sink to support all formats (String, JSON, Avro)
+        KafkaSink<byte[]> kafkaSink = KafkaSink.<byte[]>builder()
+                .setBootstrapServers(targetConfig.getKafka().getBootstrapServers())
+                .setRecordSerializer(
+                    KafkaRecordSerializationSchema.<byte[]>builder()
+                        .setTopic(targetConfig.getKafka().getTopic())
+                        .setValueSerializationSchema(new org.apache.flink.api.common.serialization.SerializationSchema<byte[]>() {
+                            @Override
+                            public byte[] serialize(byte[] element) {
+                                return element;
+                            }
+                        })
+                        .build()
+                )
                 .setKafkaProducerConfig(kafkaProps)
-                .setDeliveryGuarantee(DeliveryGuarantee.AT_LEAST_ONCE)
                 .build();
 
-        outputStream
-                .sinkTo(sink)
-                .uid("kafka-sink-" + config.getKafka().getTopic())
-                .name("Kafka Sink: " + config.getKafka().getTopic());
+        // startNewChain() breaks the chain from Table API operators so this
+        // appears as a distinct "Transformation" node in the Flink job graph.
+        DataStream<Row> resultStream = tableEnv.toDataStream(resultTable)
+                .map(new AuditCountingMapFunction(AuditAccumulators.TRANSFORM_OUT))
+                .startNewChain()
+                .name("Transformation")
+                .uid("audit-transform-out");
 
-        log.info("Kafka sink '{}' registered successfully", config.getKafka().getTopic());
+        String targetTopic = targetConfig.getKafka().getTopic();
+
+        SingleOutputStreamOperator<byte[]> serializedStream;
+
+        if (FORMAT_JSON.equalsIgnoreCase(format)) {
+            serializedStream = resultStream.map(row -> {
+                java.util.Map<String, Object> map = new java.util.LinkedHashMap<>();
+                java.util.Set<String> nameSet = row.getFieldNames(true);
+                String[] names = (nameSet != null) ? nameSet.toArray(new String[0]) : new String[0];
+                for (int i = 0; i < row.getArity(); i++) {
+                    String key = (i < names.length) ? names[i] : "f" + i;
+                    map.put(key, row.getField(i));
+                }
+                return JSON_MAPPER.writeValueAsBytes(map);
+            }).startNewChain()
+              .name("Sink: Serializer (JSON) [" + targetTopic + "]")
+              .uid("json-serializer");
+
+        } else if (FORMAT_AVRO.equalsIgnoreCase(format)) {
+            String schemaStr = (targetConfig.getSchema() != null) ? targetConfig.getSchema().getDefinition() : null;
+            if (schemaStr != null && !schemaStr.isEmpty()) {
+                serializedStream = resultStream
+                        .map(new AvroRowSerializer(schemaStr, targetTopic))
+                        .startNewChain()
+                        .name("Sink: Serializer (AVRO) [" + targetTopic + "]")
+                        .uid("avro-serializer");
+            } else {
+                log.warn("AVRO target format selected but no schema provided. Falling back to String bytes.");
+                serializedStream = resultStream
+                        .map(row -> row.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8))
+                        .startNewChain()
+                        .name("Sink: Serializer (STRING fallback) [" + targetTopic + "]")
+                        .uid("avro-serializer-fallback");
+            }
+        } else {
+            serializedStream = resultStream
+                    .map(row -> row.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8))
+                    .startNewChain()
+                    .name("Sink: Serializer (STRING) [" + targetTopic + "]")
+                    .uid("string-serializer");
+        }
+
+        serializedStream
+                .sinkTo(kafkaSink)
+                .uid("kafka-sink-" + targetConfig.getKafka().getTopic())
+                .name("Kafka Sink");
+
+        log.info("Kafka sink configured successfully");
+    }
+
+    // Inner class for Avro Serialization
+    public static class AvroRowSerializer extends org.apache.flink.api.common.functions.RichMapFunction<Row, byte[]> {
+        private final String schemaStr;
+        private final String topicName;
+        private transient Schema schema;
+        private transient GenericDatumWriter<GenericRecord> writer;
+        private transient LongCounter writtenCounter;
+
+        public AvroRowSerializer(String schemaStr, String topicName) {
+            this.schemaStr = schemaStr;
+            this.topicName = topicName;
+        }
+
+        /** Backwards-compatible single-arg constructor (topic defaults to "unknown"). */
+        public AvroRowSerializer(String schemaStr) {
+            this(schemaStr, "unknown");
+        }
+
+        @Override
+        public void open(Configuration parameters) {
+            try {
+                this.schema = new Schema.Parser().parse(schemaStr);
+                this.writer = new GenericDatumWriter<>(schema);
+                this.writtenCounter = getRuntimeContext()
+                        .getLongCounter(AuditAccumulators.targetWritten(topicName));
+            } catch (Exception e) {
+                log.error("Failed to parse Avro schema", e);
+                throw new RuntimeException("Invalid Avro Schema", e);
+            }
+        }
+
+        @Override
+        public byte[] map(Row row) throws Exception {
+            if (schema == null) return new byte[0];
+
+            try (ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+                GenericRecord record = new GenericData.Record(schema);
+                int i = 0;
+                for (Schema.Field field : schema.getFields()) {
+                    if (i >= row.getArity()) break;
+                    Object val = row.getField(i);
+                    if (val != null) {
+                        if (val instanceof java.time.Instant) {
+                            val = ((java.time.Instant) val).toEpochMilli();
+                        } else if (val instanceof java.time.LocalDateTime) {
+                            val = ((java.time.LocalDateTime) val).atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli();
+                        } else if (val instanceof java.sql.Timestamp) {
+                            val = ((java.sql.Timestamp) val).getTime();
+                        } else if (val instanceof CharSequence) {
+                            val = val.toString();
+                        }
+                        record.put(field.name(), val);
+                    }
+                    i++;
+                }
+
+                Encoder encoder = EncoderFactory.get().binaryEncoder(out, null);
+                writer.write(record, encoder);
+                encoder.flush();
+                writtenCounter.add(1L);
+                return out.toByteArray();
+
+            } catch (Exception e) {
+                log.error("Avro serialization error: " + e.getMessage());
+                throw e;
+            }
+        }
     }
 
     private Properties buildKafkaProperties(KafkaConfig kafkaConfig) {
@@ -86,54 +212,36 @@ public class KafkaTargetLayer {
             AuthConfig auth = kafkaConfig.getAuthentication();
 
             if ("SASL_SSL".equalsIgnoreCase(auth.getType()) ||
-                    "SASL_PLAINTEXT".equalsIgnoreCase(auth.getType())) {
+                "SASL_PLAINTEXT".equalsIgnoreCase(auth.getType())) {
 
                 props.put("security.protocol", auth.getType());
                 props.put("sasl.mechanism", auth.getMechanism());
 
-                String loginModule = "org.apache.kafka.common.security.plain.PlainLoginModule";
-                if ("SCRAM-SHA-256".equalsIgnoreCase(auth.getMechanism())) {
-                    loginModule = "org.apache.kafka.common.security.scram.ScramLoginModule";
-                }
-
-                String jaasConfig = String.format(
+                if (auth.getJaasConfig() != null && !auth.getJaasConfig().isEmpty()) {
+                    props.put("sasl.jaas.config", auth.getJaasConfig());
+                } else {
+                    String loginModule = "SCRAM-SHA-256".equalsIgnoreCase(auth.getMechanism())
+                        ? "org.apache.kafka.common.security.scram.ScramLoginModule"
+                        : "org.apache.kafka.common.security.plain.PlainLoginModule";
+                    props.put("sasl.jaas.config", String.format(
                         "%s required username=\"%s\" password=\"%s\";",
                         loginModule, auth.getUsername(), auth.getPassword()
-                );
-                props.put("sasl.jaas.config", jaasConfig);
+                    ));
+                }
+
+                if ("SASL_SSL".equalsIgnoreCase(auth.getType())) {
+                    if (auth.getTruststoreLocation() != null && !auth.getTruststoreLocation().isEmpty()) {
+                        props.put("ssl.truststore.location", auth.getTruststoreLocation());
+                        if (auth.getTruststorePassword() != null) {
+                            props.put("ssl.truststore.password", auth.getTruststorePassword());
+                        }
+                    } else {
+                        log.warn("SASL_SSL configured but truststoreLocation is not set");
+                    }
+                }
             }
         }
 
         return props;
-    }
-
-    public static class RowToJsonMapper extends RichMapFunction<Row, String> {
-        private final String[] fieldNames;
-        private transient ObjectMapper objectMapper;
-
-        public RowToJsonMapper(String[] fieldNames) {
-            this.fieldNames = fieldNames;
-        }
-
-        @Override
-        public void open(Configuration parameters) {
-            this.objectMapper = new ObjectMapper();
-        }
-
-        @Override
-        public String map(Row row) throws Exception {
-            Map<String, Object> result = new LinkedHashMap<>();
-            for (int i = 0; i < fieldNames.length; i++) {
-                result.put(fieldNames[i], row.getField(i));
-            }
-            return objectMapper.writeValueAsString(result);
-        }
-    }
-
-    public static class RowToStringMapper extends RichMapFunction<Row, String> {
-        @Override
-        public String map(Row row) {
-            return row.toString();
-        }
     }
 }

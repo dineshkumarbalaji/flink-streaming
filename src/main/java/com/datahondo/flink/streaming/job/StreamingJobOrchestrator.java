@@ -7,13 +7,9 @@ import com.datahondo.flink.streaming.audit.ReconciliationService;
 import com.datahondo.flink.streaming.audit.RunContext;
 import com.datahondo.flink.streaming.config.SourceConfig;
 import com.datahondo.flink.streaming.config.StreamingJobConfig;
-<<<<<<< HEAD
 import com.datahondo.flink.streaming.source.KafkaSourceLayer;
 import com.datahondo.flink.streaming.sink.KafkaTargetLayer;
-=======
-import com.datahondo.flink.streaming.source.SourceLayer;
-import com.datahondo.flink.streaming.target.TargetLayer;
->>>>>>> 73d953808598173fd15fc5fc460ffae0005248e4
+import com.datahondo.flink.streaming.sink.TargetLayer;
 import com.datahondo.flink.streaming.transformation.TransformationLayer;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
