@@ -51,7 +51,7 @@ spec:
             command:
             - kafka-topics
             - --bootstrap-server
-            - localhost:9092
+            - localhost:29092
             - --list
           initialDelaySeconds: 30
           periodSeconds: 10
