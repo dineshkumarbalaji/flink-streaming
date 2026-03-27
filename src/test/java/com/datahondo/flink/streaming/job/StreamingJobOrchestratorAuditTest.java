@@ -8,7 +8,7 @@ import com.datahondo.flink.streaming.config.AuditConfig;
 import com.datahondo.flink.streaming.config.FlinkConfig;
 import com.datahondo.flink.streaming.config.StreamingJobConfig;
 import com.datahondo.flink.streaming.source.SourceLayer;
-import com.datahondo.flink.streaming.target.TargetLayer;
+import com.datahondo.flink.streaming.sink.TargetLayer;
 import com.datahondo.flink.streaming.transformation.TransformationLayer;
 import org.apache.flink.table.api.Table;
 import org.junit.jupiter.api.BeforeEach;
