@@ -35,9 +35,9 @@ variables:
   registryRepo: 'helm'
 
   # Deployment
-  sitNamespace: 'dvx'
-  uatNamespace: 'emde-uat'
-  prdNamespace: 'emde-prd'
+  sitNamespace: 'emde'
+  uatNamespace: 'emde'
+  prdNamespace: 'emde'
   deployTimeout: '600s'
 
   # Paths & Project Structure
