@@ -44,7 +44,7 @@ variables:
   projectPath: '.'
 
   # Component Config
-  imageName: 'flink-streaming'
+  imageName: 'emde-1.0.0/flink-streaming'
   chartPath: '.'
   chartYamlFile: 'Chart.yaml'
 
