@@ -13,9 +13,8 @@ spring:
     hibernate:
       ddl-auto: update
     show-sql: false
-    properties:
-      hibernate:
-        dialect: org.hibernate.dialect.H2Dialect
+    # dialect is intentionally omitted — Spring Boot auto-detects from the datasource URL
+    # (H2 for local/K8s, PostgreSQL when DB_URL points to postgres)
 
 # Infrastructure-level Flink config (injected into JobController as systemConfig).
 # Per-job values (parallelism, checkpoint interval) are supplied via the REST API at submit time.

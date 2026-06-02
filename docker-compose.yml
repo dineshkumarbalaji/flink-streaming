@@ -102,6 +102,8 @@ services:
     ports:
       - "8082:8082"
     depends_on:
+      postgres:
+        condition: service_healthy
       jobmanager:
         condition: service_started
       kafka:
@@ -111,6 +113,11 @@ services:
       - STREAMING_JOB_FLINK_HOST=jobmanager
       - STREAMING_JOB_FLINK_PORT=8081
       - STREAMING_JOB_FLINK_JAR_PATH=/app/flink-job.jar
+      # Job Audit Table (Feature 008) — use the same PostgreSQL instance as audit/reconciliation sinks
+      - DB_URL=jdbc:postgresql://postgres:5432/flinkdb
+      - DB_DRIVER=org.postgresql.Driver
+      - DB_USERNAME=flinkuser
+      - DB_PASSWORD=flinkpassword
     volumes:
       - ./configs:/app/configs
       - checkpoints:/app/checkpoints

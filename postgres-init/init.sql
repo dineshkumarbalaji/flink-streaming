@@ -1,4 +1,20 @@
--- Database Initialization for Flink Audit and Reconciliation
+-- Database Initialization for Flink Audit, Reconciliation, and Job Audit (Feature 008)
+
+-- Feature 008: persistent job submission history
+CREATE TABLE IF NOT EXISTS job_audit_records (
+    id                  BIGSERIAL PRIMARY KEY,
+    job_name            VARCHAR(256) NOT NULL,
+    flink_job_id        VARCHAR(128),
+    run_id              VARCHAR(128),
+    status              VARCHAR(32)  NOT NULL DEFAULT 'SUBMITTING',
+    parallelism         INTEGER,
+    checkpoint_interval BIGINT,
+    config_file_path    VARCHAR(512),
+    config_snapshot     TEXT,
+    submitted_at        TIMESTAMP DEFAULT NOW(),
+    updated_at          TIMESTAMP DEFAULT NOW(),
+    error_message       TEXT
+);
 
 CREATE TABLE IF NOT EXISTS flink_audit_events (
     run_id        VARCHAR(128),
