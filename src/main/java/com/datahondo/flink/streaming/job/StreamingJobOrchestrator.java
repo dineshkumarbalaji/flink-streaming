@@ -11,7 +11,7 @@ import com.datahondo.flink.streaming.savepoint.SavepointException;
 import com.datahondo.flink.streaming.savepoint.SavepointRecord;
 import com.datahondo.flink.streaming.savepoint.SavepointService;
 import com.datahondo.flink.streaming.source.SourceLayer;
-import com.datahondo.flink.streaming.target.TargetLayer;
+import com.datahondo.flink.streaming.sink.TargetLayer;
 import com.datahondo.flink.streaming.transformation.TransformationLayer;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;

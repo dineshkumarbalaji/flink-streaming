@@ -1,4 +1,4 @@
-package com.datahondo.flink.streaming.target;
+package com.datahondo.flink.streaming.sink;
 
 import com.datahondo.flink.streaming.config.TargetConfig;
 import org.apache.flink.table.api.Table;

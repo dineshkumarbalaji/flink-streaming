@@ -1,0 +1,64 @@
+variables:
+  # Agent Pool
+  poolName: 'Kubernetes-Pool'
+
+  # Triggers & Paths
+  triggerBranches: 'main, master, feature/*, release/*'
+  prBranches: 'main, master, release/*'
+  pathIncludes: 'flink_streaming/**'
+  pathExcludes: 'README.md, **/*.md'
+
+  # Stage Control
+  skipVersionCalculation: 'false'
+  skipSecurity: 'true'
+  skipTests: 'true'
+  skipPackage: 'false'
+  skipDeploy: 'false'
+  isContainer: 'true'
+
+  # Job-level Control
+  skipValidateConfig: 'false'
+  skipDependencyCheck: 'false'
+  skipSASTScan: 'true'
+  skipUnitTests: 'true'
+  skipDockerBuild: 'false'
+  skipTrivyScan: 'true'
+  skipHelmPackage: 'false'
+  skipTagSIT: 'true'
+  skipManualPromotion: 'true'
+  skipTagPromotion: 'true'
+
+  # Artifacts & Container Registry
+  acrName: 'globalemdeproductacr'
+  # Note: acrLoginUser and acrLoginPassword are injected at runtime from the
+  # 'globalemdeproductacr-credentials' Variable Group (Key Vault) — NOT stored here.
+  registryRepo: 'helm'
+
+  # Deployment
+  sitNamespace: 'emde'
+  uatNamespace: 'emde'
+  prdNamespace: 'emde'
+  deployTimeout: '600s'
+
+  # Paths & Project Structure
+  projectPath: '.'
+
+  # Component Config
+  imageName: 'emde-1.0.0/flink-streaming'
+  chartPath: '.'
+  chartYamlFile: 'Chart.yaml'
+
+  # Deployment
+
+  deployReleaseName: 'flink-streaming'
+
+
+  # Deploy Command
+  deployCommand: |
+    helm upgrade --install $(deployReleaseName) $(chartPath) \
+      -f $(chartPath)/values.yaml \
+      -n $(targetNamespace) \
+      --set image.tag=$(imageTag) \
+      --set global.azure.images.flinkStreaming.tag=$(imageTag) \
+      --wait \
+      --timeout=$(deployTimeout)

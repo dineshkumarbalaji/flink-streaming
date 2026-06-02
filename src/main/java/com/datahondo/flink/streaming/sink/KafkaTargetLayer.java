@@ -1,4 +1,4 @@
-package com.datahondo.flink.streaming.target;
+package com.datahondo.flink.streaming.sink;
 
 import com.datahondo.flink.streaming.audit.AuditAccumulators;
 import com.datahondo.flink.streaming.audit.AuditCountingMapFunction;
@@ -48,14 +48,14 @@ public class KafkaTargetLayer implements TargetLayer {
             StreamTableEnvironment tableEnv,
             Table resultTable,
             TargetConfig targetConfig) {
-        
+
         log.info("Creating Kafka sink for topic: {}, Format: {}", targetConfig.getKafka().getTopic(), targetConfig.getKafka().getFormat());
-        
+
         // Build Kafka properties
         Properties kafkaProps = buildKafkaProperties(targetConfig.getKafka());
-        
+
         String format = targetConfig.getKafka().getFormat();
-        
+
         // Use byte[] sink to support all formats (String, JSON, Avro)
         KafkaSink<byte[]> kafkaSink = KafkaSink.<byte[]>builder()
                 .setBootstrapServers(targetConfig.getKafka().getBootstrapServers())
@@ -72,8 +72,7 @@ public class KafkaTargetLayer implements TargetLayer {
                 )
                 .setKafkaProducerConfig(kafkaProps)
                 .build();
-                
-        // ── Transformation boundary ───────────────────────────────────────────
+
         // startNewChain() breaks the chain from Table API operators so this
         // appears as a distinct "Transformation" node in the Flink job graph.
         DataStream<Row> resultStream = tableEnv.toDataStream(resultTable)
@@ -84,9 +83,6 @@ public class KafkaTargetLayer implements TargetLayer {
 
         String targetTopic = targetConfig.getKafka().getTopic();
 
-        // ── Sink boundary ─────────────────────────────────────────────────────
-        // startNewChain() on the serializer breaks it from the Transformation node
-        // so the job graph shows: Source → Transformation → Sink
         SingleOutputStreamOperator<byte[]> serializedStream;
 
         if (FORMAT_JSON.equalsIgnoreCase(format)) {
@@ -147,10 +143,10 @@ public class KafkaTargetLayer implements TargetLayer {
                 .sinkTo(kafkaSink)
                 .uid("kafka-sink-" + targetConfig.getKafka().getTopic())
                 .name("Kafka Sink");
-        
+
         log.info("Kafka sink configured successfully");
     }
-    
+
     // Inner class for Avro Serialization
     public static class AvroRowSerializer extends org.apache.flink.api.common.functions.RichMapFunction<Row, byte[]> {
         private final String schemaStr;
@@ -173,12 +169,14 @@ public class KafkaTargetLayer implements TargetLayer {
             try {
                 this.schema = new Schema.Parser().parse(schemaStr);
                 this.writer = new GenericDatumWriter<>(schema);
+                log.info("AvroRowSerializer initialized for topic '{}' ({} fields)",
+                        topicName, schema.getFields().size());
             } catch (Exception e) {
-                log.error("Failed to parse Avro schema", e);
+                log.error("Failed to parse Avro schema for topic '{}'", topicName, e);
                 throw new RuntimeException("Invalid Avro Schema", e);
             }
         }
-        
+
         @Override
         public byte[] map(Row row) throws Exception {
             if (schema == null) return new byte[0];
@@ -223,23 +221,20 @@ public class KafkaTargetLayer implements TargetLayer {
 
     private Properties buildKafkaProperties(KafkaConfig kafkaConfig) {
         Properties props = new Properties();
-        
-        // Add custom properties
+
         if (kafkaConfig.getProperties() != null) {
             props.putAll(kafkaConfig.getProperties());
         }
-        
-        // Add authentication if configured
+
         if (kafkaConfig.getAuthentication() != null) {
             AuthConfig auth = kafkaConfig.getAuthentication();
-            
+
             if ("SASL_SSL".equalsIgnoreCase(auth.getType()) ||
                 "SASL_PLAINTEXT".equalsIgnoreCase(auth.getType())) {
 
                 props.put("security.protocol", auth.getType());
                 props.put("sasl.mechanism", auth.getMechanism());
 
-                // Use explicit jaasConfig override if provided, otherwise build from credentials
                 if (auth.getJaasConfig() != null && !auth.getJaasConfig().isEmpty()) {
                     props.put("sasl.jaas.config", auth.getJaasConfig());
                 } else {
@@ -252,7 +247,6 @@ public class KafkaTargetLayer implements TargetLayer {
                     ));
                 }
 
-                // SSL truststore (required for SASL_SSL)
                 if ("SASL_SSL".equalsIgnoreCase(auth.getType())) {
                     if (auth.getTruststoreLocation() != null && !auth.getTruststoreLocation().isEmpty()) {
                         props.put("ssl.truststore.location", auth.getTruststoreLocation());

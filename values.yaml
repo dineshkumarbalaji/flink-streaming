@@ -1,0 +1,209 @@
+# Default values for flink-streaming
+replicaCount: 1
+
+# global.azure.images is used by deployment.yaml for CPA-compatible image references.
+# Overridden by the umbrella platform chart in Marketplace deployments.
+global:
+  azure:
+    images:
+      flinkStreaming:
+        registry: globalemdeproductacr.azurecr.io
+        image: emde-1.0.0/flink-streaming
+        tag: "1.0.0-devops.1171"
+
+image:
+  repository: globalemdeproductacr.azurecr.io/emde-1.0.0/flink-streaming
+  pullPolicy: Always
+  tag: "1.0.0-devops.1171"
+
+imagePullSecrets:
+  - name: globalemdeproductacr-secret
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: "flink-streaming-sa"
+
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "8082"
+  prometheus.io/path: "/actuator/prometheus"
+  loki.io/scrape: "true"
+
+# Note: the base Dockerfile (eclipse-temurin:8-jre) runs as root by default.
+# Update the Dockerfile with `useradd -m -u 1000 appuser` to enable runAsNonRoot.
+podSecurityContext:
+  runAsNonRoot: false
+
+securityContext:
+  capabilities:
+    drop:
+    - ALL
+  readOnlyRootFilesystem: false
+  allowPrivilegeEscalation: false
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8082
+  annotations: {}
+
+ingress:
+  enabled: true
+  className: "webapprouting.kubernetes.azure.com"
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+  hosts:
+    - host: flink-streaming.dev.eaashl.com
+      paths:
+        - path: /
+          pathType: ImplementationSpecific
+  tls:
+    - secretName: flink-streaming-tls
+      hosts:
+        - flink-streaming.dev.eaashl.com
+
+resources:
+  limits:
+    cpu: 2000m
+    memory: 2Gi
+  requests:
+    cpu: 500m
+    memory: 1Gi
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 80
+  targetMemoryUtilizationPercentage: 80
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+
+# Probes — Spring Boot app is on port 8082
+livenessProbe:
+  httpGet:
+    path: /
+    port: 8082
+  initialDelaySeconds: 60
+  periodSeconds: 15
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /
+    port: 8082
+  initialDelaySeconds: 30
+  periodSeconds: 10
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+# Environment variables — configmap and secret refs managed by emde-configmap / emde-secrets
+env:
+  - name: STREAMING_JOB_FLINK_REMOTE
+    valueFrom:
+      configMapKeyRef:
+        name: flink-streaming-config
+        key: STREAMING_JOB_FLINK_REMOTE
+  - name: STREAMING_JOB_FLINK_HOST
+    valueFrom:
+      configMapKeyRef:
+        name: flink-streaming-config
+        key: STREAMING_JOB_FLINK_HOST
+  - name: STREAMING_JOB_FLINK_PORT
+    valueFrom:
+      configMapKeyRef:
+        name: flink-streaming-config
+        key: STREAMING_JOB_FLINK_PORT
+  - name: STREAMING_JOB_FLINK_JAR_PATH
+    valueFrom:
+      configMapKeyRef:
+        name: flink-streaming-config
+        key: STREAMING_JOB_FLINK_JAR_PATH
+
+# ConfigMap — points to the in-cluster Flink JobManager and Kafka
+configMap:
+  enabled: true
+  data:
+    STREAMING_JOB_FLINK_REMOTE: "true"
+    STREAMING_JOB_FLINK_HOST: "flink-jobmanager"
+    STREAMING_JOB_FLINK_PORT: "8081"
+    STREAMING_JOB_FLINK_JAR_PATH: "/app/flink-job.jar"
+
+secret:
+  enabled: false
+  data: {}
+
+# ---------------------------------------------------------------------------
+# ZooKeeper — required by Kafka
+# ---------------------------------------------------------------------------
+zookeeper:
+  enabled: true
+  image: "confluentinc/cp-zookeeper:7.5.0"
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# ---------------------------------------------------------------------------
+# Kafka broker
+# ---------------------------------------------------------------------------
+kafka:
+  enabled: true
+  image: "confluentinc/cp-kafka:7.5.0"
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+
+# ---------------------------------------------------------------------------
+# Kafka UI
+# ---------------------------------------------------------------------------
+kafkaUi:
+  enabled: true
+  image: "provectuslabs/kafka-ui:latest"
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+# ---------------------------------------------------------------------------
+# Flink cluster (JobManager + TaskManager)
+# ---------------------------------------------------------------------------
+flink:
+  enabled: true
+  image: "flink:1.18.0-java8"
+  jobmanager:
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        cpu: 1000m
+        memory: 1Gi
+  taskmanager:
+    replicas: 1
+    numberOfTaskSlots: 2
+    resources:
+      requests:
+        cpu: 500m
+        memory: 1Gi
+      limits:
+        cpu: 2000m
+        memory: 2Gi

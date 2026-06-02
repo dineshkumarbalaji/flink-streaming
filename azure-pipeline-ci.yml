@@ -1,0 +1,17 @@
+resources:
+  repositories:
+  - repository: pipeline-library
+    type: git
+    name: DVX/pipeline-library
+    ref: feature/fix-later
+
+variables:
+- group: globalemdeproductacr-credentials  # ACR credentials from Key Vault via DevOps Library
+- template: pipeline-config.yml
+
+extends:
+  template: templates/common-ci.yml@pipeline-library
+  parameters:
+    appName: 'flink-streaming'
+    imageName: $(imageName)
+    chartPath: $(chartPath)
