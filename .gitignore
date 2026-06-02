@@ -40,8 +40,10 @@ build*.log
 build_log*.txt
 
 # Flink / Application Specific
-checkpoint/
-savepoint/
+# Anchor to root so these don't match Java source packages with the same name
+/checkpoint/
+/savepoint/
+/checkpoints/
 *.json
 !configs/
 !src/main/resources/static/
