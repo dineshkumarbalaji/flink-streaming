@@ -482,7 +482,7 @@ document.addEventListener('DOMContentLoaded', () => {
             document.querySelectorAll('.tab-content').forEach(c => c.classList.add('hidden'));
             document.getElementById('tab-' + tab).classList.remove('hidden');
             document.getElementById('loadConfigBtn').style.display = tab === 'submit' ? '' : 'none';
-            if (tab === 'dashboard') loadRunningJobs();
+            if (tab === 'dashboard') { loadRunningJobs(); loadJobAuditHistory(); }
         });
     });
 
@@ -781,4 +781,67 @@ document.addEventListener('DOMContentLoaded', () => {
             document.getElementById('auditEventsList').innerHTML = '<li>Error fetching audit logs.</li>';
         }
     }
+
+    // ── Feature 008: Job Audit History ───────────────────────────────────────
+
+    async function loadJobAuditHistory() {
+        const tbody = document.getElementById('auditHistoryRows');
+        if (!tbody) return;
+        tbody.innerHTML = '<tr><td colspan="7" style="padding:16px;text-align:center;color:#aaa;">Loading...</td></tr>';
+        try {
+            const res = await fetch('/api/dashboard/jobs');
+            if (!res.ok) { tbody.innerHTML = '<tr><td colspan="7" style="color:#ef4444;padding:16px;">Failed to load history</td></tr>'; return; }
+            const jobs = await res.json();
+            if (!jobs.length) {
+                tbody.innerHTML = '<tr><td colspan="7" style="padding:16px;text-align:center;color:#aaa;">No job history yet</td></tr>';
+                return;
+            }
+            tbody.innerHTML = '';
+            const colors = { RUNNING:'#22c55e', FINISHED:'#3b82f6', FAILED:'#ef4444', CANCELLED:'#6b7280', SUBMITTING:'#f59e0b' };
+            jobs.forEach(job => {
+                const color = colors[job.status] || '#9ca3af';
+                const shortId = job.flinkJobId ? job.flinkJobId.substring(0, 8) + '…' : '—';
+                const submitted = job.submittedAt ? new Date(job.submittedAt).toLocaleString() : '—';
+                const stopBtn = job.status === 'RUNNING'
+                    ? `<button onclick="stopAuditJob(${job.id})" style="margin-right:4px;cursor:pointer;">Stop</button>` : '';
+                const delBtn = job.status !== 'RUNNING' && job.status !== 'SUBMITTING'
+                    ? `<button onclick="deleteAuditRecord(${job.id})" style="cursor:pointer;">Delete</button>` : '';
+                const tr = document.createElement('tr');
+                tr.style.borderBottom = '1px solid rgba(255,255,255,0.06)';
+                tr.innerHTML = `
+                    <td style="padding:8px;">${job.id}</td>
+                    <td style="padding:8px;font-weight:500;">${job.jobName}</td>
+                    <td style="padding:8px;font-family:monospace;font-size:0.78rem;">${shortId}</td>
+                    <td style="padding:8px;"><span style="background:${color};color:#fff;padding:2px 8px;border-radius:12px;font-size:0.78rem;">${job.status}</span></td>
+                    <td style="padding:8px;">${job.parallelism || '—'}</td>
+                    <td style="padding:8px;font-size:0.8rem;">${submitted}</td>
+                    <td style="padding:8px;">${stopBtn}${delBtn}</td>`;
+                tbody.appendChild(tr);
+            });
+        } catch (e) {
+            tbody.innerHTML = '<tr><td colspan="7" style="color:#ef4444;padding:16px;">Error: ' + e.message + '</td></tr>';
+        }
+    }
+
+    async function stopAuditJob(id) {
+        if (!confirm('Stop this job?')) return;
+        const res = await fetch('/api/dashboard/jobs/' + id + '/stop', { method: 'POST' });
+        showNotification(await res.text(), res.ok ? 'success' : 'error');
+        loadJobAuditHistory();
+        loadRunningJobs();
+    }
+
+    async function deleteAuditRecord(id) {
+        if (!confirm('Delete this audit record?')) return;
+        const res = await fetch('/api/dashboard/jobs/' + id, { method: 'DELETE' });
+        showNotification(await res.text(), res.ok ? 'success' : 'error');
+        loadJobAuditHistory();
+    }
+
+    // Auto-refresh audit history every 30s when dashboard tab is visible
+    setInterval(() => {
+        const dash = document.getElementById('tab-dashboard');
+        if (dash && !dash.classList.contains('hidden')) loadJobAuditHistory();
+    }, 30000);
+
 });

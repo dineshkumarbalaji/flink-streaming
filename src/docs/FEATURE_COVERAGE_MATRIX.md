@@ -202,6 +202,35 @@
 
 ---
 
+## 11. Feature 008 — Job Audit Table & Dashboard
+
+| Feature | Class | Status | Notes |
+|---------|-------|--------|-------|
+| `JobAuditRecord` JPA entity | `job.audit.JobAuditRecord` | ✅ | Status enum: SUBMITTING/RUNNING/FINISHED/FAILED/CANCELLED |
+| `JobAuditRepository` Spring Data JPA | `job.audit.JobAuditRepository` | ✅ | findByJobName, findByStatusIn, findAllOrderBySubmittedAt |
+| `JobAuditService` CRUD | `job.audit.JobAuditService` | ✅ | createRecord, updateRunning, updateStatus, deleteById |
+| `JobStatusPoller` @Scheduled 30 s | `job.audit.JobStatusPoller` | 🔶 | Live JobClient callbacks; Flink REST fallback deferred |
+| `JobDashboardController` REST | `web.JobDashboardController` | ✅ | GET list/single/by-name, POST stop, DELETE |
+| Audit record created on submit | `web.JobController` | ✅ | SUBMITTING before orchestrator; RUNNING after executeAsync() |
+| Audit record updated to FAILED on error | `web.JobController` | ✅ | Exception caught, status updated before rethrow |
+| `configDir` configurable via yml | `config.FlinkConfig` | ✅ | `${JOB_CONFIG_DIR:configs}` — used in JobController + SavepointRegistry |
+| pom.xml: spring-boot-starter-data-jpa + h2 | `pom.xml` | ✅ | H2 default, PostgreSQL via env vars |
+| Job History UI panel | `static/index.html` + `app.js` | ✅ | Table with stop/delete, 30 s auto-refresh |
+
+## 12. Feature 009 — Future Enhancements (Infrastructure)
+
+| Feature | Class | Status | Notes |
+|---------|-------|--------|-------|
+| DLQ side-output routing | `source.KafkaSourceLayer.SchemaProcessFunction` | ✅ | `OutputTag<String> DLQ_TAG`; routes to per-source DLQ Kafka topic |
+| `DlqRecord` envelope model | `audit.DlqRecord` | ✅ | ErrorType enum: SCHEMA_VALIDATION, TYPE_CONVERSION, MALFORMED |
+| `DlqConfig` per-source config | `config.DlqConfig` | ✅ | enabled, topic, bootstrapServers |
+| `SourceConfig.dlq` field | `config.SourceConfig` | ✅ | Per-source DLQ configuration |
+| RocksDB state backend option | `config.FlinkConfig` + `job.StreamingJobOrchestrator` | ✅ | `stateBackend: ROCKSDB` — falls back to HASHMAP if unavailable |
+| `SavepointRegistry` disk persistence | `savepoint.SavepointRegistry` | ✅ | `@PostConstruct` load + `persistToDisk()` on every register |
+| `AsyncSavepointStatus` model | `web.model.AsyncSavepointStatus` | ✅ | State enum: PENDING/COMPLETED/FAILED |
+
+---
+
 ## Summary
 
 | Category | Total Features | ✅ Unit-tested | 🧪 Integration-tested | 🔶 Implicit | 🚧 Stub |
@@ -215,4 +244,6 @@
 | Flink Accumulators | 11 | 7 | 0 | 4 | 0 |
 | End-to-End | 8 | 4 | 4 | 0 | 0 |
 | Feature 007 — Validation & Error Hardening | 12 | 12 | 0 | 0 | 0 |
-| **Total** | **102** | **81 (79%)** | **6 (6%)** | **15 (15%)** | **0 (0%)** |
+| Feature 008 — Job Audit Table & Dashboard | 10 | 8 | 0 | 2 | 0 |
+| Feature 009 — DLQ / RocksDB / Savepoint Persistence | 7 | 7 | 0 | 0 | 0 |
+| **Total** | **119** | **96 (81%)** | **6 (5%)** | **17 (14%)** | **0 (0%)** |

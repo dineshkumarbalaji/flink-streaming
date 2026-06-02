@@ -380,7 +380,20 @@ public class StreamingJobOrchestrator {
                     config.getFlink().getMaxConcurrentCheckpoints());
         }
         if (config.getFlink().getCheckpointDir() != null && !config.getFlink().getCheckpointDir().isEmpty()) {
-            env.setStateBackend(new HashMapStateBackend());
+            String backend = config.getFlink().getStateBackend();
+            if ("ROCKSDB".equalsIgnoreCase(backend)) {
+                try {
+                    env.setStateBackend(
+                        new org.apache.flink.contrib.streaming.state.EmbeddedRocksDBStateBackend());
+                    log.info("State backend: EmbeddedRocksDB");
+                } catch (Exception e) {
+                    log.warn("RocksDB backend unavailable, falling back to HashMapStateBackend: {}",
+                            e.getMessage());
+                    env.setStateBackend(new HashMapStateBackend());
+                }
+            } else {
+                env.setStateBackend(new HashMapStateBackend());
+            }
             env.getCheckpointConfig().setCheckpointStorage(config.getFlink().getCheckpointDir());
         }
         log.info("Flink environment configured — parallelism={}, checkpoint={}ms",

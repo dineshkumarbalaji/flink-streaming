@@ -19,4 +19,7 @@ public class StreamingJobConfig {
 
     /** Optional reconciliation configuration. When null, reconciliation is disabled. */
     private ReconciliationConfig reconciliation;
+
+    /** Dead letter queue — routes unprocessable records to a dedicated Kafka topic. */
+    private DlqConfig dlq;
 }

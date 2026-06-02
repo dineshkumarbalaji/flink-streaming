@@ -2,6 +2,9 @@ package com.datahondo.flink.streaming.web;
 
 import com.datahondo.flink.streaming.config.*;
 import com.datahondo.flink.streaming.job.StreamingJobOrchestrator;
+import com.datahondo.flink.streaming.job.audit.JobAuditRecord;
+import com.datahondo.flink.streaming.job.audit.JobAuditService;
+import com.datahondo.flink.streaming.job.audit.JobStatusPoller;
 import com.datahondo.flink.streaming.savepoint.SavepointException;
 import com.datahondo.flink.streaming.savepoint.SavepointRecord;
 import com.datahondo.flink.streaming.savepoint.SavepointRegistry;
@@ -28,6 +31,8 @@ public class JobController {
     private final SqlValidatorService sqlValidatorService;
     private final com.datahondo.flink.streaming.audit.InMemoryAuditCache auditCache;
     private final SavepointRegistry savepointRegistry;
+    private final JobAuditService jobAuditService;
+    private final JobStatusPoller jobStatusPoller;
 
     private final StreamingJobConfig systemConfig;
     
@@ -147,7 +152,7 @@ public class JobController {
 
     @GetMapping("/{jobName}")
     public ResponseEntity<com.datahondo.flink.streaming.web.model.SavedJobConfig> getJobConfig(@PathVariable String jobName) {
-        java.io.File file = new java.io.File("configs/" + jobName + ".json");
+        java.io.File file = new java.io.File(getConfigDir() + "/" + jobName + ".json");
         if (!file.exists()) {
             return ResponseEntity.notFound().build();
         }
@@ -248,8 +253,27 @@ public class JobController {
                                 + "' validation failed: " + e.getMessage());
             }
 
-            orchestrator.submitJob(config);
-            saveJobConfig(request);
+            String configPath = getConfigDir() + "/" + request.getJobName() + ".json";
+            JobAuditRecord auditRecord = jobAuditService.createRecord(
+                    request.getJobName(), null,
+                    request.getParallelism(), request.getCheckpointInterval(),
+                    configPath, request);
+            try {
+                org.apache.flink.core.execution.JobClient jobClient = orchestrator.submitJob(config);
+                saveJobConfig(request);
+                String flinkJobId = jobClient != null ? jobClient.getJobID().toString() : null;
+                jobAuditService.updateRunning(auditRecord.getId(), flinkJobId);
+                if (jobClient != null) {
+                    final org.apache.flink.core.execution.JobClient ref = jobClient;
+                    jobStatusPoller.register(request.getJobName(), () -> {
+                        try { return ref.getJobStatus().get().name(); } catch (Exception ex) { return null; }
+                    });
+                }
+            } catch (Exception ex) {
+                jobAuditService.updateStatus(auditRecord.getId(),
+                        JobAuditRecord.Status.FAILED, ex.getMessage());
+                throw ex;
+            }
             return ResponseEntity.ok("Job '" + request.getJobName() + "' submitted successfully.");
         } catch (Exception e) {
             log.error("Failed to submit job", e);
@@ -374,6 +398,15 @@ public class JobController {
         return null;
     }
 
+    private String getConfigDir() {
+        if (systemConfig.getFlink() != null
+                && systemConfig.getFlink().getConfigDir() != null
+                && !systemConfig.getFlink().getConfigDir().isEmpty()) {
+            return systemConfig.getFlink().getConfigDir();
+        }
+        return "configs";
+    }
+
     private void saveJobConfig(JobRequest request) {
         try {
             // Map to structured config
@@ -411,7 +444,7 @@ public class JobController {
                     savedConfig.getJobName(),
                     savedConfig.getSources() != null ? savedConfig.getSources().size() : 0);
             
-            String fileName = "configs/" + request.getJobName() + ".json";
+            String fileName = getConfigDir() + "/" + request.getJobName() + ".json";
             java.io.File file = new java.io.File(fileName);
             file.getParentFile().mkdirs();
             

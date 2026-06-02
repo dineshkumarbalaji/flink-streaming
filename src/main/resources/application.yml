@@ -4,6 +4,18 @@ server:
 spring:
   application:
     name: flink-streaming
+  datasource:
+    url: ${DB_URL:jdbc:h2:file:./data/audit-db;DB_CLOSE_ON_EXIT=FALSE;AUTO_SERVER=TRUE}
+    driver-class-name: ${DB_DRIVER:org.h2.Driver}
+    username: ${DB_USERNAME:sa}
+    password: ${DB_PASSWORD:}
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.H2Dialect
 
 # Infrastructure-level Flink config (injected into JobController as systemConfig).
 # Per-job values (parallelism, checkpoint interval) are supplied via the REST API at submit time.
@@ -19,6 +31,8 @@ streaming:
       checkpoint-dir: ${FLINK_CHECKPOINT_DIR:}
       savepoint-dir: ${FLINK_SAVEPOINT_DIR:/app/checkpoints/savepoints}
       savepoint-poll-timeout-ms: ${FLINK_SAVEPOINT_POLL_TIMEOUT_MS:300000}
+      config-dir: ${JOB_CONFIG_DIR:configs}
+      state-backend: ${FLINK_STATE_BACKEND:HASHMAP}
 
     # Audit and reconciliation sink configuration.
     # Set sink-type to LOG (default), KAFKA, or JDBC.
@@ -41,6 +55,15 @@ streaming:
       password: flinkpassword
       # window is derived from flink.checkpoint-interval automatically
       tolerance-percent: 0.0
+
+    dlq:
+      enabled: ${DLQ_ENABLED:false}
+      topic:
+      bootstrap-servers:
+
+  audit:
+    poll-interval-ms: ${AUDIT_POLL_INTERVAL_MS:30000}
+    poll-enabled: ${AUDIT_POLL_ENABLED:true}
 
 logging:
   level:

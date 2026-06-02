@@ -26,4 +26,10 @@ public class FlinkConfig {
     private String host = "localhost";
     private int port = 8081;
     private String jarPath;
+
+    // State backend: HASHMAP (default, in-memory) or ROCKSDB (disk-spilling for large state)
+    private String stateBackend = "HASHMAP";
+
+    // Directory for saved job config JSON files (default: configs/)
+    private String configDir = "configs";
 }

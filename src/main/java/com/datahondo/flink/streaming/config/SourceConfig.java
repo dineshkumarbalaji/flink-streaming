@@ -13,4 +13,6 @@ public class SourceConfig {
     private String alias;
     private SchemaConfig schema;
     private WatermarkConfig watermark;
+    /** Per-source DLQ config. When set and enabled, rejected records are routed to a DLQ topic. */
+    private DlqConfig dlq;
 }

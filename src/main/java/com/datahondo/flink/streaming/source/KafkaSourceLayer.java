@@ -37,8 +37,14 @@ import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
 import org.apache.flink.types.Row;
 import org.apache.flink.util.Collector;
 import com.datahondo.flink.streaming.audit.AuditAccumulators;
+import com.datahondo.flink.streaming.audit.DlqRecord;
+import com.datahondo.flink.streaming.config.DlqConfig;
 import com.datahondo.flink.streaming.exception.SchemaException;
+import com.fasterxml.jackson.databind.SerializationFeature;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import org.apache.flink.api.common.accumulators.LongCounter;
+import org.apache.flink.streaming.api.functions.ProcessFunction;
+import org.apache.flink.util.OutputTag;
 import org.springframework.stereotype.Component;
 
 import java.io.Serializable;
@@ -54,6 +60,9 @@ public class KafkaSourceLayer implements SourceLayer {
     private static final String TYPE_DOUBLE = "DOUBLE";
     private static final String TYPE_BOOLEAN = "BOOLEAN";
     private static final String TYPE_TIMESTAMP = "TIMESTAMP";
+
+    /** Side-output tag for records that fail schema validation — used by SchemaProcessFunction. */
+    public static final OutputTag<String> DLQ_TAG = new OutputTag<String>("dlq-output") {};
     
     @Override
     public Table createSourceTable(
@@ -174,10 +183,43 @@ public class KafkaSourceLayer implements SourceLayer {
                  fields = parseSchemaString(schemaDefinition);
                  RowTypeInfo rowTypeInfo = createRowTypeInfo(fields);
 
-                 validatedStream = rawStream
-                    .flatMap(new SchemaValidator(fields, schemaDefinition, sourceConfig.getTableName()))
-                    .returns(rowTypeInfo)
-                    .uid("schema-validator");
+                 DlqConfig dlqCfg = sourceConfig.getDlq();
+                 boolean dlqEnabled = dlqCfg != null && dlqCfg.isEnabled();
+
+                 if (dlqEnabled && dlqCfg != null) {
+                     String dlqTopic = dlqCfg.getTopic() != null && !dlqCfg.getTopic().isEmpty()
+                             ? dlqCfg.getTopic()
+                             : sourceConfig.getKafka().getTopic() + "-dlq";
+                     String dlqBootstrap = dlqCfg.getBootstrapServers() != null
+                                        && !dlqCfg.getBootstrapServers().isEmpty()
+                             ? dlqCfg.getBootstrapServers()
+                             : sourceConfig.getKafka().getBootstrapServers();
+                     SingleOutputStreamOperator<Row> processed = rawStream
+                         .process(new SchemaProcessFunction(fields, schemaDefinition,
+                                 sourceConfig.getTableName(), sourceConfig.getKafka().getTopic()))
+                         .returns(rowTypeInfo)
+                         .uid("schema-validator");
+                     // Route rejected records to the DLQ Kafka topic via side output
+                     processed.getSideOutput(DLQ_TAG)
+                         .map(raw -> raw.getBytes(java.nio.charset.StandardCharsets.UTF_8))
+                         .sinkTo(org.apache.flink.connector.kafka.sink.KafkaSink.<byte[]>builder()
+                             .setBootstrapServers(dlqBootstrap)
+                             .setRecordSerializer(
+                                 org.apache.flink.connector.kafka.sink.KafkaRecordSerializationSchema
+                                     .<byte[]>builder()
+                                     .setTopic(dlqTopic)
+                                     .setValueSerializationSchema(bytes -> bytes)
+                                     .build())
+                             .build())
+                         .name("DLQ Sink [" + dlqTopic + "]")
+                         .uid("dlq-sink-" + sourceConfig.getTableName());
+                     validatedStream = processed;
+                 } else {
+                     validatedStream = rawStream
+                         .flatMap(new SchemaValidator(fields, schemaDefinition, sourceConfig.getTableName()))
+                         .returns(rowTypeInfo)
+                         .uid("schema-validator");
+                 }
             }
 
             // Build Schema for Table API
@@ -560,6 +602,110 @@ public class KafkaSourceLayer implements SourceLayer {
         return props;
     }
     
+    /**
+     * A {@link ProcessFunction} variant of {@link SchemaValidator} that routes rejected records
+     * to a Flink side output ({@link #DLQ_TAG}) so they can be forwarded to a DLQ Kafka topic
+     * rather than silently dropped. Used only when DLQ is enabled for a source.
+     */
+    public static class SchemaProcessFunction extends ProcessFunction<String, Row> {
+        private final List<FieldDefinition> fields;
+        private final String schemaStr;
+        private final String tableName;
+        private final String sourceTopic;
+
+        private transient ObjectMapper objectMapper;
+        private transient JsonSchema jsonSchema;
+        private transient LongCounter readCounter;
+        private transient LongCounter rejectedCounter;
+
+        private static final com.fasterxml.jackson.databind.ObjectMapper DLQ_MAPPER =
+                new com.fasterxml.jackson.databind.ObjectMapper()
+                        .registerModule(new JavaTimeModule())
+                        .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
+
+        public SchemaProcessFunction(List<FieldDefinition> fields, String schemaStr,
+                                     String tableName, String sourceTopic) {
+            this.fields = fields;
+            this.schemaStr = schemaStr;
+            this.tableName = tableName;
+            this.sourceTopic = sourceTopic;
+        }
+
+        @Override
+        public void open(Configuration parameters) {
+            readCounter     = getRuntimeContext().getLongCounter(AuditAccumulators.SOURCE_READ_ALL);
+            rejectedCounter = getRuntimeContext().getLongCounter(AuditAccumulators.SOURCE_REJECTED_ALL);
+            objectMapper = new ObjectMapper();
+            if (schemaStr != null) {
+                try {
+                    JsonSchemaFactory factory =
+                            JsonSchemaFactory.getInstance(SpecVersion.VersionFlag.V201909);
+                    jsonSchema = factory.getSchema(schemaStr);
+                    log.info("SchemaProcessFunction (DLQ) initialized for table '{}', topic '{}'",
+                            tableName, sourceTopic);
+                } catch (Exception e) {
+                    log.error("Failed to init JSON schema for DLQ path on table '{}': {}",
+                            tableName, e.getMessage());
+                }
+            }
+        }
+
+        @Override
+        public void processElement(String value, Context ctx, Collector<Row> out) {
+            try {
+                JsonNode node = objectMapper.readTree(value);
+                if (jsonSchema != null) {
+                    Set<ValidationMessage> errors = jsonSchema.validate(node);
+                    if (!errors.isEmpty()) {
+                        rejectedCounter.add(1L);
+                        routeToDlq(ctx, value, DlqRecord.ErrorType.SCHEMA_VALIDATION,
+                                errors.iterator().next().getMessage());
+                        return;
+                    }
+                }
+                Row row = Row.withPositions(fields.size());
+                for (int i = 0; i < fields.size(); i++) {
+                    FieldDefinition field = fields.get(i);
+                    JsonNode fn = node.get(field.name);
+                    if (fn == null || fn.isNull()) { row.setField(i, null); continue; }
+                    try {
+                        switch (field.type) {
+                            case "INT":     row.setField(i, fn.asInt());     break;
+                            case "DOUBLE":  row.setField(i, fn.asDouble());  break;
+                            case "BOOLEAN": row.setField(i, fn.asBoolean()); break;
+                            default:        row.setField(i, fn.asText());
+                        }
+                    } catch (Exception e) {
+                        rejectedCounter.add(1L);
+                        routeToDlq(ctx, value, DlqRecord.ErrorType.TYPE_CONVERSION,
+                                "Field " + field.name + ": " + e.getMessage());
+                        return;
+                    }
+                }
+                out.collect(row);
+                readCounter.add(1L);
+            } catch (Exception e) {
+                rejectedCounter.add(1L);
+                routeToDlq(ctx, value, DlqRecord.ErrorType.MALFORMED, e.getMessage());
+            }
+        }
+
+        private void routeToDlq(Context ctx, String rawValue,
+                                 DlqRecord.ErrorType errorType, String message) {
+            try {
+                DlqRecord record = DlqRecord.builder()
+                        .originalPayload(rawValue)
+                        .errorType(errorType)
+                        .errorMessage(message)
+                        .sourceTopic(sourceTopic)
+                        .build();
+                ctx.output(DLQ_TAG, DLQ_MAPPER.writeValueAsString(record));
+            } catch (Exception ex) {
+                ctx.output(DLQ_TAG, rawValue);
+            }
+        }
+    }
+
     private WatermarkStrategy<String> createWatermarkStrategy(WatermarkConfig config) {
         if (config == null || "NONE".equalsIgnoreCase(config.getStrategy())) {
             return WatermarkStrategy.noWatermarks();
