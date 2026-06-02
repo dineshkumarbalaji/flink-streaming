@@ -46,7 +46,7 @@ public class JobDashboardController {
     @PostMapping("/{id}/stop")
     public ResponseEntity<String> stopJob(@PathVariable Long id) {
         Optional<JobAuditRecord> opt = auditService.findById(id);
-        if (opt.isEmpty()) return ResponseEntity.notFound().build();
+        if (!opt.isPresent()) return ResponseEntity.notFound().build();
 
         JobAuditRecord record = opt.get();
         if (record.getStatus() != JobAuditRecord.Status.RUNNING) {
