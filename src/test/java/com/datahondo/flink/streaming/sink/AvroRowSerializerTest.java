@@ -1,4 +1,4 @@
-package com.datahondo.flink.streaming.target;
+package com.datahondo.flink.streaming.sink;
 
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericDatumReader;
@@ -12,9 +12,6 @@ import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-/**
- * Unit tests for {@link KafkaTargetLayer.AvroRowSerializer}.
- */
 class AvroRowSerializerTest {
 
     private static final String SCHEMA_STR =

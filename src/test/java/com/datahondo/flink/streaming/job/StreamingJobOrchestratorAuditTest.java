@@ -151,7 +151,7 @@ class StreamingJobOrchestratorAuditTest {
      */
     @Test
     void pollRunningJobs_concurrentWithSubmit_doesNotThrowConcurrentModificationException()
-            throws InterruptedException {
+            throws Exception {
         StreamingJobConfig cfg = minimalConfig(false);
         when(transformationLayer.applyTransformation(any(), any())).thenReturn(mock(Table.class));
 
