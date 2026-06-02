@@ -4,6 +4,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Method;
+import java.util.Collections;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -66,12 +67,12 @@ class SqlValidatorServiceTest {
     @Test
     void validateSql_throws_whenSqlIsEmpty() {
         assertThrows(Exception.class,
-                () -> service.validateSql("", "t", null, false, null));
+                () -> service.validateSql("", Collections.emptyList()));
     }
 
     @Test
     void validateSql_throws_whenSqlIsNull() {
         assertThrows(Exception.class,
-                () -> service.validateSql(null, "t", null, false, null));
+                () -> service.validateSql(null, Collections.emptyList()));
     }
 }

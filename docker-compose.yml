@@ -1,4 +1,22 @@
 services:
+  postgres:
+    image: postgres:15
+    container_name: postgres
+    environment:
+      POSTGRES_DB: flinkdb
+      POSTGRES_USER: flinkuser
+      POSTGRES_PASSWORD: flinkpassword
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./postgres-init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U flinkuser -d flinkdb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
   zookeeper:
     image: confluentinc/cp-zookeeper:7.5.0
     container_name: zookeeper
@@ -60,6 +78,8 @@ services:
       - |
         FLINK_PROPERTIES=
         jobmanager.rpc.address: jobmanager
+    volumes:
+      - checkpoints:/app/checkpoints
 
   taskmanager:
     image: flink:1.18.0-java8
@@ -73,6 +93,8 @@ services:
         FLINK_PROPERTIES=
         jobmanager.rpc.address: jobmanager
         taskmanager.numberOfTaskSlots: 2
+    volumes:
+      - checkpoints:/app/checkpoints
 
   flink-app:
     build: .
@@ -91,3 +113,7 @@ services:
       - STREAMING_JOB_FLINK_JAR_PATH=/app/flink-job.jar
     volumes:
       - ./configs:/app/configs
+      - checkpoints:/app/checkpoints
+
+volumes:
+  checkpoints:

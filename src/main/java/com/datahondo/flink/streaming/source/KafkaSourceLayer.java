@@ -351,8 +351,8 @@ public class KafkaSourceLayer implements SourceLayer {
         }
 
         public void open(Configuration parameters) {
-            readCounter     = getRuntimeContext().getLongCounter(AuditAccumulators.sourceRead(tableName));
-            rejectedCounter = getRuntimeContext().getLongCounter(AuditAccumulators.sourceRejected(tableName));
+            readCounter     = getRuntimeContext().getLongCounter(AuditAccumulators.SOURCE_READ_ALL);
+            rejectedCounter = getRuntimeContext().getLongCounter(AuditAccumulators.SOURCE_REJECTED_ALL);
             objectMapper = new ObjectMapper();
             if (schemaStr != null) {
                 try {
@@ -442,8 +442,8 @@ public class KafkaSourceLayer implements SourceLayer {
 
         @Override
         public void open(Configuration parameters) {
-            readCounter     = getRuntimeContext().getLongCounter(AuditAccumulators.sourceRead(tableName));
-            rejectedCounter = getRuntimeContext().getLongCounter(AuditAccumulators.sourceRejected(tableName));
+            readCounter     = getRuntimeContext().getLongCounter(AuditAccumulators.SOURCE_READ_ALL);
+            rejectedCounter = getRuntimeContext().getLongCounter(AuditAccumulators.SOURCE_REJECTED_ALL);
             if (schemaStr != null) {
                 try {
                     this.avroSchema = new Parser().parse(schemaStr);

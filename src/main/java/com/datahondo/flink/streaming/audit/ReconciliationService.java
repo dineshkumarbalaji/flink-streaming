@@ -35,6 +35,7 @@ import java.util.Map;
 public class ReconciliationService {
 
     private final AuditSinkFactory sinkFactory;
+    private final InMemoryAuditCache auditCache;
 
     // ── Public API ────────────────────────────────────────────────────────────
 
@@ -52,7 +53,7 @@ public class ReconciliationService {
                                           Counts counts) {
         ReconciliationConfig cfg = runContext.getReconciliationConfig();
         Instant windowEnd = Instant.now();
-        String windowLabel = (cfg != null) ? cfg.getWindow() : "n/a";
+        String windowLabel = formatElapsed(windowEnd.toEpochMilli() - windowStart.toEpochMilli());
         double tolerancePct = (cfg != null) ? cfg.getTolerancePercent() : 0.0;
 
         List<String> discrepancies = new ArrayList<>();
@@ -71,6 +72,8 @@ public class ReconciliationService {
                 .reconciled(discrepancies.isEmpty())
                 .discrepancies(discrepancies)
                 .build();
+
+        auditCache.setLatestReport(runContext.getJobName(), report);
 
         if (runContext.isReconciliationEnabled() && cfg != null) {
             ReconciliationSink sink = sinkFactory.createReconciliationSink(cfg);
@@ -110,6 +113,20 @@ public class ReconciliationService {
                     "Invalid state: rejectedCount(%d) > sourceReadCount(%d)",
                     counts.schemaRejected, counts.sourceRead));
         }
+    }
+
+    // ── Window helpers ────────────────────────────────────────────────────────
+
+    private static String formatElapsed(long ms) {
+        if (ms < 1_000) return ms + "ms";
+        long secs = ms / 1_000;
+        if (secs < 60) return secs + "s";
+        long mins = secs / 60;
+        long remSecs = secs % 60;
+        if (mins < 60) return remSecs > 0 ? mins + "m " + remSecs + "s" : mins + "m";
+        long hours = mins / 60;
+        long remMins = mins % 60;
+        return remMins > 0 ? hours + "h " + remMins + "m" : hours + "h";
     }
 
     // ── Helper: build Counts from raw accumulator map ─────────────────────────

@@ -32,7 +32,7 @@ class AuditServiceTest {
     void setUp() {
         when(sinkFactory.createAuditSink(any())).thenReturn(mockSink);
         when(mockSink.sinkType()).thenReturn("MOCK");
-        service = new AuditService(sinkFactory);
+        service = new AuditService(sinkFactory, new InMemoryAuditCache());
     }
 
     private RunContext enabledRun(String jobName) {

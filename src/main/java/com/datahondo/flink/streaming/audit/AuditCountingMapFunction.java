@@ -8,7 +8,7 @@ import org.apache.flink.types.Row;
 
 /**
  * Pass-through {@link RichMapFunction} that increments a named
- * {@link LongCounter} accumulator for every {@link Row} that flows through it.
+ * {@link LongCounter} accumulator for every item that flows through it.
  *
  * <p>Place this operator immediately after {@code tableEnv.toDataStream(resultTable)}
  * to count transform-output records, and again just before the Kafka sink to count
@@ -19,7 +19,7 @@ import org.apache.flink.types.Row;
  * {@code JobClient.getAccumulators()}.
  */
 @Slf4j
-public class AuditCountingMapFunction extends RichMapFunction<Row, Row> {
+public class AuditCountingMapFunction<T> extends RichMapFunction<T, T> {
 
     private final String accumulatorName;
     private transient LongCounter counter;
@@ -38,7 +38,7 @@ public class AuditCountingMapFunction extends RichMapFunction<Row, Row> {
     }
 
     @Override
-    public Row map(Row value) {
+    public T map(T value) {
         counter.add(1L);
         return value;
     }

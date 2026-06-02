@@ -54,8 +54,9 @@ class AuditPipelineIntegrationTest {
             }
         };
 
-        auditService          = new AuditService(factory);
-        reconciliationService = new ReconciliationService(factory);
+        InMemoryAuditCache cache = new InMemoryAuditCache();
+        auditService          = new AuditService(factory, cache);
+        reconciliationService = new ReconciliationService(factory, cache);
     }
 
     // ── Tests ─────────────────────────────────────────────────────────────────

@@ -2,7 +2,7 @@
 
 > **Framework**: DataHonDo Flink Streaming Platform
 > **Feature set**: Production-grade audit and reconciliation support
-> **Date**: 2026-03-25
+> **Date**: 2026-06-02
 
 ---
 
@@ -177,6 +177,28 @@
 | Periodic reconciliation via scheduled task | Medium | Spring `@Scheduled` polling `JobClient.getAccumulators()` |
 | Multi-source accumulator aggregation | Low | Sum per-table read/rejected keys before reconciliation |
 | Alerting integration (PagerDuty / OpsGenie) | Low | Trigger on `!report.isReconciled()` |
+| ~~SQL validation only against first source schema~~ | ~~Medium~~ | **Fixed — Feature 007** |
+| ~~Kafka topic existence not checked in `/submit`~~ | ~~High~~ | **Fixed — Feature 007** |
+| ~~Savepoint path not validated before submission~~ | ~~High~~ | **Fixed — Feature 007** |
+
+---
+
+## 10. Feature 007 — Validation & Error Handling Hardening
+
+| Feature | Class | Status | Notes |
+|---------|-------|--------|-------|
+| Full exception chain logged for Flink 1.18 REST bug | `StreamingJobOrchestrator` | ✅ | `rootCauseMessage()` helper added; both parse + status errors logged with stack trace |
+| Savepoint path validation in `/validate` endpoint | `JobController` | ✅ | URI format, directory traversal guard, `file:///` existence check |
+| Savepoint path validation in `/submit` endpoint | `JobController` | ✅ | Returns `400 Bad Request` on invalid path |
+| Kafka source topic existence checked in `/submit` | `JobController` | ✅ | Each source validated before `orchestrator.submitJob()` |
+| Kafka target topic existence checked in `/submit` | `JobController` | ✅ | Returns `400 Bad Request` if target topic missing |
+| Multi-source SQL validation — all tables registered | `SqlValidatorService` | ✅ | `SourceEntry` inner class; `List<SourceEntry>` signature |
+| `JobController.validateJob()` passes all sources | `JobController` | ✅ | Builds `SourceEntry` per source, no longer limited to first source |
+| Eviction WARN log on event eviction | `InMemoryAuditCache` | ✅ | Includes running total and persistent-sink recommendation |
+| Eviction WARN log on job eviction | `InMemoryAuditCache` | ✅ | Includes running total |
+| `getEvictedEventCount()` getter | `InMemoryAuditCache` | ✅ | Exposed for future dashboard integration |
+| `getEvictedJobCount()` getter | `InMemoryAuditCache` | ✅ | Exposed for future dashboard integration |
+| `windowLabel` shows actual elapsed time | `ReconciliationService` | ✅ | `formatElapsed()` — e.g., `"2m 34s"` instead of `"1h"` |
 
 ---
 
@@ -184,12 +206,13 @@
 
 | Category | Total Features | ✅ Unit-tested | 🧪 Integration-tested | 🔶 Implicit | 🚧 Stub |
 |----------|---------------|---------------|----------------------|------------|---------|
-| Configuration | 17 | 14 | 0 | 2 | 2 |
+| Configuration | 17 | 14 | 0 | 3 | 0 |
 | Run Identity | 7 | 7 | 0 | 0 | 0 |
-| Audit Events | 16 | 6 | 3 | 7 | 0 |
-| Audit Sink | 11 | 7 | 0 | 3 | 1 |
+| Audit Events | 15 | 8 | 1 | 6 | 0 |
+| Audit Sink | 11 | 9 | 0 | 2 | 0 |
 | AuditService | 9 | 8 | 1 | 0 | 0 |
-| Reconciliation | 12 | 11 | 1 | 0 | 0 |
-| Flink Accumulators | 11 | 5 | 0 | 6 | 0 |
+| Reconciliation | 12 | 12 | 0 | 0 | 0 |
+| Flink Accumulators | 11 | 7 | 0 | 4 | 0 |
 | End-to-End | 8 | 4 | 4 | 0 | 0 |
-| **Total** | **91** | **62 (68%)** | **9 (10%)** | **18 (20%)** | **3 (3%)** |
+| Feature 007 — Validation & Error Hardening | 12 | 12 | 0 | 0 | 0 |
+| **Total** | **102** | **81 (79%)** | **6 (6%)** | **15 (15%)** | **0 (0%)** |

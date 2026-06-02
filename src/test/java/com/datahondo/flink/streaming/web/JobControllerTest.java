@@ -16,8 +16,20 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.mockito.Mockito.verify;
 
+import com.datahondo.flink.streaming.audit.AuditEvent;
+import com.datahondo.flink.streaming.audit.AuditEventType;
+import com.datahondo.flink.streaming.audit.InMemoryAuditCache;
+import com.datahondo.flink.streaming.audit.ReconciliationReport;
+import org.springframework.http.ResponseEntity;
+import org.springframework.http.HttpStatus;
+import java.util.Collections;
+import java.util.List;
+
 @ExtendWith(MockitoExtension.class)
 class JobControllerTest {
+
+    @Mock
+    private InMemoryAuditCache auditCache;
 
     @Mock
     private StreamingJobOrchestrator orchestrator;
@@ -75,5 +87,39 @@ class JobControllerTest {
         StreamingJobConfig capturedConfig = configCaptor.getValue();
         assertNotNull(capturedConfig.getTransformation());
         assertEquals("custom_result_table", capturedConfig.getTransformation().getResultTableName());
+    }
+
+    @Test
+    void getJobConfig_returnsNotFound_whenFileDoesNotExist() {
+        ResponseEntity<?> response = jobController.getJobConfig("non-existent");
+        assertEquals(HttpStatus.NOT_FOUND, response.getStatusCode());
+    }
+
+    @Test
+    void getJobAuditEvents_returnsEventsFromCache() {
+        AuditEvent event = AuditEvent.builder().jobName("test-job").eventType(AuditEventType.JOB_RUNNING).build();
+        org.mockito.Mockito.when(auditCache.getEvents("test-job")).thenReturn(Collections.singletonList(event));
+        
+        ResponseEntity<List<AuditEvent>> response = jobController.getJobAuditEvents("test-job");
+        assertEquals(HttpStatus.OK, response.getStatusCode());
+        assertEquals(1, response.getBody().size());
+    }
+
+    @Test
+    void getJobReconciliation_returnsNoContent_whenNoReport() {
+        org.mockito.Mockito.when(auditCache.getLatestReport("test-job")).thenReturn(null);
+        
+        ResponseEntity<ReconciliationReport> response = jobController.getJobReconciliation("test-job");
+        assertEquals(HttpStatus.NO_CONTENT, response.getStatusCode());
+    }
+
+    @Test
+    void getJobReconciliation_returnsReport() {
+        ReconciliationReport report = ReconciliationReport.builder().jobName("test-job").build();
+        org.mockito.Mockito.when(auditCache.getLatestReport("test-job")).thenReturn(report);
+        
+        ResponseEntity<ReconciliationReport> response = jobController.getJobReconciliation("test-job");
+        assertEquals(HttpStatus.OK, response.getStatusCode());
+        assertEquals(report, response.getBody());
     }
 }

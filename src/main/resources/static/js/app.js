@@ -289,6 +289,14 @@ document.addEventListener('DOMContentLoaded', () => {
         data.checkpointInterval = parseInt(document.getElementById('checkpointInterval').value);
         data.checkpointDir = document.getElementById('checkpointDir').value || null;
 
+        // Savepoint restore (optional)
+        const spPath = document.getElementById('savepointPath').value.trim();
+        if (spPath) {
+            data.savepointPath = spPath;
+            data.allowNonRestoredState =
+                document.getElementById('allowNonRestoredState').checked;
+        }
+
         // Sources
         data.sources = [];
         const sourceEntries = sourcesContainer.querySelectorAll('.source-entry');
@@ -501,6 +509,8 @@ document.addEventListener('DOMContentLoaded', () => {
             const tbody = table.querySelector('tbody');
             jobs.forEach(job => {
                 const tr = document.createElement('tr');
+                tr.className = 'clickable-row';
+                tr.onclick = () => showJobDetails(job.jobName);
                 const statusClass = job.status || 'UNKNOWN';
                 tr.innerHTML = `
                     <td>${job.jobName}</td>
@@ -607,6 +617,168 @@ document.addEventListener('DOMContentLoaded', () => {
 
             const sqlFilePathEl = document.getElementById('sqlFilePath');
             if (sqlFilePathEl) sqlFilePathEl.value = config.transformation.sqlFilePath || '';
+        }
+    }
+
+    // --- Savepoint path restore field toggle ---
+    const savepointPathInput = document.getElementById('savepointPath');
+    const allowNonRestoredStateRow = document.getElementById('allowNonRestoredStateRow');
+    if (savepointPathInput) {
+        savepointPathInput.addEventListener('input', () => {
+            allowNonRestoredStateRow.style.display =
+                savepointPathInput.value.trim() ? 'flex' : 'none';
+        });
+    }
+
+    // --- Job Details Modal Logic ---
+    const jobDetailsModal = document.getElementById('jobDetailsModal');
+    const closeModalBtn = document.getElementById('closeModalBtn');
+
+    closeModalBtn.addEventListener('click', () => {
+        jobDetailsModal.classList.add('hidden');
+        currentModalJob = null;
+    });
+
+    let currentModalJob = null;
+
+    document.getElementById('savepointBtn').addEventListener('click', async () => {
+        if (!currentModalJob) return;
+        const btn = document.getElementById('savepointBtn');
+        const msg = document.getElementById('savepointStatusMsg');
+        btn.disabled = true;
+        msg.textContent = 'Taking savepoint… this may take a moment.';
+        try {
+            const resp = await fetch(`/api/jobs/${currentModalJob}/savepoint`, { method: 'POST' });
+            if (resp.ok) {
+                const record = await resp.json();
+                msg.textContent = 'Savepoint completed.';
+                loadSavepoints(currentModalJob);
+                showNotification('Savepoint saved: ' + record.savepointPath, 'success');
+            } else {
+                const err = await resp.text();
+                msg.textContent = 'Failed: ' + err;
+                showNotification('Savepoint failed: ' + err, 'error');
+            }
+        } catch (e) {
+            msg.textContent = 'Error: ' + e.message;
+        } finally {
+            btn.disabled = false;
+        }
+    });
+
+    document.getElementById('cancelJobBtn').addEventListener('click', async () => {
+        if (!currentModalJob) return;
+        if (!confirm(`Cancel job "${currentModalJob}"? This cannot be undone.`)) return;
+        try {
+            const resp = await fetch(`/api/jobs/${currentModalJob}`, { method: 'DELETE' });
+            if (resp.ok) {
+                showNotification(`Job "${currentModalJob}" cancelled.`, 'success');
+                jobDetailsModal.classList.add('hidden');
+                currentModalJob = null;
+                loadRunningJobs();
+            } else {
+                showNotification('Cancel failed: ' + await resp.text(), 'error');
+            }
+        } catch (e) {
+            showNotification('Cancel error: ' + e.message, 'error');
+        }
+    });
+
+    async function loadSavepoints(jobName) {
+        const ul = document.getElementById('savepointsList');
+        try {
+            const resp = await fetch(`/api/jobs/${jobName}/savepoints`);
+            if (!resp.ok) { ul.innerHTML = '<li style="color:#aaa;font-family:sans-serif;font-size:0.85rem;">Could not load savepoints.</li>'; return; }
+            const records = await resp.json();
+            ul.innerHTML = '';
+            if (!records || records.length === 0) {
+                ul.innerHTML = '<li style="font-family:sans-serif;color:#aaa;font-size:0.85rem;">No savepoints yet.</li>';
+                return;
+            }
+            // Newest first
+            records.slice().reverse().forEach(r => {
+                const li = document.createElement('li');
+                const ts = new Date(r.createdAt).toLocaleString();
+                const tag = r.cancelledJob ? ' <span style="color:#ef4444;">[cancel]</span>' : '';
+                li.innerHTML = `<span title="${r.savepointPath}">${r.savepointPath}${tag}<br><small style="color:#888;">${ts}</small></span>
+                    <button class="btn-copy-path" onclick="navigator.clipboard.writeText('${r.savepointPath}').then(()=>showNotification('Path copied','success'))">Copy</button>`;
+                ul.appendChild(li);
+            });
+        } catch (e) {
+            ul.innerHTML = '<li style="color:#ef4444;font-family:sans-serif;font-size:0.85rem;">Error loading savepoints.</li>';
+        }
+    }
+
+    async function showJobDetails(jobName) {
+        currentModalJob = jobName;
+        document.getElementById('detailsTitle').textContent = `Job Details: ${jobName}`;
+        document.getElementById('configSummary').textContent = 'Loading...';
+        document.getElementById('reconciliationData').innerHTML = 'Loading...';
+        document.getElementById('auditEventsList').innerHTML = '<li>Loading...</li>';
+        document.getElementById('savepointStatusMsg').textContent = '';
+        jobDetailsModal.classList.remove('hidden');
+        loadSavepoints(jobName);
+
+        // Fetch Config
+        try {
+            const configResp = await fetch(`/api/jobs/${jobName}`);
+            if (configResp.ok) {
+                const configJson = await configResp.json();
+                document.getElementById('configSummary').textContent = JSON.stringify(configJson, null, 2);
+            } else {
+                document.getElementById('configSummary').textContent = 'Config not available.';
+            }
+        } catch (e) {
+            document.getElementById('configSummary').textContent = 'Error fetching config.';
+        }
+
+        // Fetch Reconciliation
+        try {
+            const reconResp = await fetch(`/api/jobs/${jobName}/reconciliation`);
+            if (reconResp.ok && reconResp.status !== 204) {
+                const reconData = await reconResp.json();
+                const status = reconData.reconciled ? '<span style="color:#22c55e;font-weight:bold;">Success</span>' : '<span style="color:#ef4444;font-weight:bold;">Failed</span>';
+                document.getElementById('reconciliationData').innerHTML = `
+                    <b>Status:</b> ${status}<br>
+                    <b>Window:</b> ${reconData.windowStart} &rarr; ${reconData.windowEnd} (${reconData.windowLabel})<br>
+                    <b>Source Read:</b> ${reconData.sourceReadCount}<br>
+                    <b>Rejected:</b> ${reconData.schemaRejectedCount}<br>
+                    <b>Transformed:</b> ${reconData.transformedCount}<br>
+                    <b>Target Written:</b> ${reconData.targetWrittenCount}<br>
+                    <b>Discrepancies:</b> ${reconData.discrepancies && reconData.discrepancies.length > 0 ? reconData.discrepancies.join(', ') : 'None'}
+                `;
+            } else {
+                document.getElementById('reconciliationData').innerHTML = '<i>No reconciliation report found yet.</i>';
+            }
+        } catch (e) {
+            document.getElementById('reconciliationData').innerHTML = 'Error fetching reconciliation.';
+        }
+
+        // Fetch Audit Events
+        try {
+            const auditResp = await fetch(`/api/jobs/${jobName}/audit`);
+            if (auditResp.ok) {
+                const auditEvents = await auditResp.json();
+                const ul = document.getElementById('auditEventsList');
+                ul.innerHTML = '';
+                if (auditEvents.length === 0) {
+                    ul.innerHTML = '<li><i>No audit events found.</i></li>';
+                } else {
+                    // Sorting backwards so newest is on top
+                    auditEvents.slice().reverse().forEach(evt => {
+                        const li = document.createElement('li');
+                        // Formatting time
+                        const timeStr = new Date(evt.timestamp).toLocaleTimeString();
+                        let countSegment = evt.count > 0 ? ` <span style="color:#aaa;">(Count: ${evt.count})</span>` : '';
+                        li.innerHTML = `<span><strong>${evt.eventType}</strong> <small style="color:#888;">[${evt.stage}]</small>${countSegment}</span> <span style="font-family:monospace;">${timeStr}</span>`;
+                        ul.appendChild(li);
+                    });
+                }
+            } else {
+                document.getElementById('auditEventsList').innerHTML = '<li>Error fetching audit logs.</li>';
+            }
+        } catch (e) {
+            document.getElementById('auditEventsList').innerHTML = '<li>Error fetching audit logs.</li>';
         }
     }
 });

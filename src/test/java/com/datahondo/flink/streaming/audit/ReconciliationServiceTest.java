@@ -17,7 +17,7 @@ class ReconciliationServiceTest {
 
     @BeforeEach
     void setUp() {
-        service = new ReconciliationService(new DefaultAuditSinkFactory());
+        service = new ReconciliationService(new DefaultAuditSinkFactory(), new InMemoryAuditCache());
     }
 
     private RunContext reconcileCtx() {

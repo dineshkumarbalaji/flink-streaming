@@ -2,6 +2,9 @@ package com.datahondo.flink.streaming.web;
 
 import com.datahondo.flink.streaming.config.*;
 import com.datahondo.flink.streaming.job.StreamingJobOrchestrator;
+import com.datahondo.flink.streaming.savepoint.SavepointException;
+import com.datahondo.flink.streaming.savepoint.SavepointRecord;
+import com.datahondo.flink.streaming.savepoint.SavepointRegistry;
 import com.datahondo.flink.streaming.web.model.JobRequest;
 import com.datahondo.flink.streaming.web.model.ValidationResponse;
 import com.datahondo.flink.streaming.web.service.KafkaValidatorService;
@@ -23,7 +26,8 @@ public class JobController {
     private final StreamingJobOrchestrator orchestrator;
     private final KafkaValidatorService validatorService;
     private final SqlValidatorService sqlValidatorService;
-
+    private final com.datahondo.flink.streaming.audit.InMemoryAuditCache auditCache;
+    private final SavepointRegistry savepointRegistry;
 
     private final StreamingJobConfig systemConfig;
     
@@ -78,21 +82,23 @@ public class JobController {
                 return ResponseEntity.ok(new ValidationResponse(false, logs));
             }
             
-            // Validate SQL
+            // Validate SQL — register all source tables so multi-source JOINs are validated.
             logs.add("Validating SQL Query...");
             try {
-                // Use the first source's table/schema for SQL validation for now, 
-                // or just pass main requirements. Ideally validator should know about all tables.
-                // For now passing first source details or empty if multi-source complex logic
-                String firstSourceTable = config.getSources().get(0).getTableName();
-                SchemaConfig firstSourceSchemaConfig = config.getSources().get(0).getSchema();
-                String firstSourceSchema = (firstSourceSchemaConfig != null) ? firstSourceSchemaConfig.getDefinition() : null;
-
-                JobRequest.SourceJobRequest firstSrc = request.getSources().get(0);
-                String watermarkMode = firstSrc.getWatermarkMode();
-                boolean hasWatermark = firstSrc.isEnableWatermark() && watermarkMode != null && !watermarkMode.equals("NONE");
-                sqlValidatorService.validateSql(request.getSqlQuery(), firstSourceTable, firstSourceSchema,
-                        hasWatermark, watermarkMode);
+                List<SqlValidatorService.SourceEntry> sourceEntries = new ArrayList<>();
+                List<SourceConfig> configSources = config.getSources();
+                List<JobRequest.SourceJobRequest> reqSources = request.getSources();
+                for (int i = 0; i < configSources.size(); i++) {
+                    SourceConfig src = configSources.get(i);
+                    JobRequest.SourceJobRequest srcReq = reqSources.get(i);
+                    String schema = (src.getSchema() != null) ? src.getSchema().getDefinition() : null;
+                    String watermarkMode = srcReq.getWatermarkMode();
+                    boolean hasWatermark = srcReq.isEnableWatermark()
+                            && watermarkMode != null && !watermarkMode.equals("NONE");
+                    sourceEntries.add(new SqlValidatorService.SourceEntry(
+                            src.getTableName(), schema, hasWatermark, watermarkMode));
+                }
+                sqlValidatorService.validateSql(request.getSqlQuery(), sourceEntries);
                 logs.add("✅ SQL Syntax OK");
             } catch (Exception e) {
                 logs.add("❌ SQL Validation Failed: " + e.getMessage());
@@ -101,16 +107,18 @@ public class JobController {
             
             // Validate Checkpoint Directory URI (if provided)
             logs.add("Validating Flink Config...");
-            String checkpointDir = request.getCheckpointDir();
-            if (checkpointDir != null && !checkpointDir.isEmpty()) {
-                if (checkpointDir.matches("(?i)file://[^/].*")) {
-                    logs.add("❌ Invalid checkpoint directory '" + checkpointDir
-                            + "': local paths require three slashes, e.g. file:///tmp/checkpoints");
+            String checkpointDirError = validateCheckpointDir(request.getCheckpointDir(), logs);
+            if (checkpointDirError != null) {
+                return ResponseEntity.ok(new ValidationResponse(false, logs));
+            }
+
+            // Validate Savepoint Path (if provided)
+            if (request.getSavepointPath() != null && !request.getSavepointPath().isEmpty()) {
+                logs.add("Validating Savepoint Path...");
+                String savepointError = validateSavepointPath(request.getSavepointPath(), logs);
+                if (savepointError != null) {
                     return ResponseEntity.ok(new ValidationResponse(false, logs));
                 }
-                logs.add("✅ Checkpoint directory URI format OK");
-            } else {
-                logs.add("✅ Checkpoint directory: using cluster default");
             }
 
             logs.add("✅ All checks passed. Ready to deploy.");
@@ -137,14 +145,109 @@ public class JobController {
         }
     }
 
+    @GetMapping("/{jobName}")
+    public ResponseEntity<com.datahondo.flink.streaming.web.model.SavedJobConfig> getJobConfig(@PathVariable String jobName) {
+        java.io.File file = new java.io.File("configs/" + jobName + ".json");
+        if (!file.exists()) {
+            return ResponseEntity.notFound().build();
+        }
+        try {
+            com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+            com.datahondo.flink.streaming.web.model.SavedJobConfig config = mapper.readValue(file, com.datahondo.flink.streaming.web.model.SavedJobConfig.class);
+            return ResponseEntity.ok(config);
+        } catch (Exception e) {
+            log.error("Failed to read config for {}", jobName, e);
+            return ResponseEntity.internalServerError().build();
+        }
+    }
+
+    @GetMapping("/{jobName}/audit")
+    public ResponseEntity<List<com.datahondo.flink.streaming.audit.AuditEvent>> getJobAuditEvents(@PathVariable String jobName) {
+        return ResponseEntity.ok(auditCache.getEvents(jobName));
+    }
+
+    @GetMapping("/{jobName}/reconciliation")
+    public ResponseEntity<com.datahondo.flink.streaming.audit.ReconciliationReport> getJobReconciliation(@PathVariable String jobName) {
+        com.datahondo.flink.streaming.audit.ReconciliationReport report = auditCache.getLatestReport(jobName);
+        if (report == null) {
+            return ResponseEntity.noContent().build();
+        }
+        return ResponseEntity.ok(report);
+    }
+
+    /**
+     * Triggers a savepoint for a running job without cancelling it.
+     * Blocks until the savepoint completes or the configured poll timeout elapses.
+     *
+     * <p>The resulting savepoint path is stored in {@link SavepointRegistry} and
+     * returned in the response body so it can be supplied as {@code savepointPath}
+     * in a future submit request to restore the job.
+     */
+    @PostMapping("/{jobName}/savepoint")
+    public ResponseEntity<?> triggerSavepoint(@PathVariable String jobName) {
+        log.info("Received savepoint request for job: {}", jobName);
+        try {
+            SavepointRecord record = orchestrator.triggerSavepoint(jobName, systemConfig);
+            savepointRegistry.register(jobName, record);
+            return ResponseEntity.ok(record);
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.notFound().build();
+        } catch (SavepointException e) {
+            log.error("Savepoint failed for job '{}'", jobName, e);
+            return ResponseEntity.internalServerError()
+                    .body("Savepoint failed: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Returns all savepoints registered for the given job, ordered by creation time (oldest first).
+     */
+    @GetMapping("/{jobName}/savepoints")
+    public ResponseEntity<java.util.List<SavepointRecord>> listSavepoints(
+            @PathVariable String jobName) {
+        return ResponseEntity.ok(savepointRegistry.getForJob(jobName));
+    }
+
     @PostMapping("/submit")
     public ResponseEntity<String> submitJob(@RequestBody JobRequest request) {
         log.info("Received job submission request: {}", request.getJobName());
         if (request.getSources() == null || request.getSources().isEmpty()) {
             return ResponseEntity.badRequest().body("Job must have at least one source configured.");
         }
+        List<String> checkpointLogs = new ArrayList<>();
+        String checkpointDirError = validateCheckpointDir(request.getCheckpointDir(), checkpointLogs);
+        if (checkpointDirError != null) {
+            return ResponseEntity.badRequest().body(checkpointDirError);
+        }
+        if (request.getSavepointPath() != null && !request.getSavepointPath().isEmpty()) {
+            List<String> savepointLogs = new ArrayList<>();
+            String savepointError = validateSavepointPath(request.getSavepointPath(), savepointLogs);
+            if (savepointError != null) {
+                return ResponseEntity.badRequest().body(savepointError);
+            }
+        }
         try {
             StreamingJobConfig config = mapToConfig(request);
+
+            // Validate Kafka source and target connectivity before submitting to Flink —
+            // catches missing topics, auth failures, and broker unreachability early.
+            for (com.datahondo.flink.streaming.config.SourceConfig source : config.getSources()) {
+                try {
+                    validatorService.validateConnection(source.getKafka());
+                } catch (Exception e) {
+                    return ResponseEntity.badRequest().body(
+                            "Source topic '" + source.getKafka().getTopic()
+                                    + "' validation failed: " + e.getMessage());
+                }
+            }
+            try {
+                validatorService.validateConnection(config.getTarget().getKafka());
+            } catch (Exception e) {
+                return ResponseEntity.badRequest().body(
+                        "Target topic '" + config.getTarget().getKafka().getTopic()
+                                + "' validation failed: " + e.getMessage());
+            }
+
             orchestrator.submitJob(config);
             saveJobConfig(request);
             return ResponseEntity.ok("Job '" + request.getJobName() + "' submitted successfully.");
@@ -152,6 +255,123 @@ public class JobController {
             log.error("Failed to submit job", e);
             return ResponseEntity.internalServerError().body("Failed to submit job: " + e.getMessage());
         }
+    }
+
+    /**
+     * Validates a savepoint path URI format and, for local {@code file:///} URIs, verifies
+     * the directory exists on this host.
+     *
+     * @return an error string if validation fails, {@code null} if the path is valid or absent.
+     */
+    private String validateSavepointPath(String savepointPath, List<String> logs) {
+        if (savepointPath == null || savepointPath.isEmpty()) {
+            return null;
+        }
+        if (savepointPath.matches("(?i)file:/[^/].*") || savepointPath.matches("(?i)file://[^/].*")) {
+            String msg = "❌ Invalid savepoint path '" + savepointPath
+                    + "': local paths require three slashes, e.g. file:///data/savepoints";
+            logs.add(msg);
+            return msg;
+        }
+        logs.add("✅ Savepoint path URI format OK");
+
+        if (savepointPath.toLowerCase().startsWith("file:///")) {
+            String localPath = savepointPath.substring("file://".length());
+
+            if (localPath.contains("..")) {
+                String msg = "❌ Invalid savepoint path (directory traversal detected): " + localPath;
+                logs.add(msg);
+                return msg;
+            }
+
+            java.io.File dir = new java.io.File(localPath);
+            try {
+                dir.getCanonicalPath();
+            } catch (java.io.IOException e) {
+                String msg = "❌ Failed to resolve savepoint path: " + e.getMessage();
+                logs.add(msg);
+                return msg;
+            }
+
+            if (!dir.exists()) {
+                String msg = "❌ Savepoint path does not exist: " + localPath;
+                logs.add(msg);
+                return msg;
+            }
+            if (!dir.isDirectory()) {
+                String msg = "❌ Savepoint path is not a directory: " + localPath;
+                logs.add(msg);
+                return msg;
+            }
+            logs.add("✅ Savepoint path exists: " + localPath
+                    + " (ensure the same path is mounted in all Flink containers)");
+        } else {
+            logs.add("✅ Savepoint path existence check skipped for non-local URI (hdfs/s3/etc.)");
+        }
+        return null;
+    }
+
+    /**
+     * Validates the checkpoint directory URI format and local path existence.
+     * Appends informational messages to {@code logs}.
+     *
+     * @return an error string if validation fails, {@code null} if the directory is valid.
+     */
+    private String validateCheckpointDir(String checkpointDir, List<String> logs) {
+        if (checkpointDir == null || checkpointDir.isEmpty()) {
+            logs.add("✅ Checkpoint directory: using cluster default");
+            return null;
+        }
+        if (checkpointDir.matches("(?i)file:/[^/].*") || checkpointDir.matches("(?i)file://[^/].*")) {
+            String msg = "❌ Invalid checkpoint directory '" + checkpointDir
+                    + "': local paths require three slashes, e.g. file:///tmp/checkpoints";
+            logs.add(msg);
+            return msg;
+        }
+        logs.add("✅ Checkpoint directory URI format OK");
+        if (checkpointDir.toLowerCase().startsWith("file:///")) {
+            // strip "file://" to get the absolute local path (e.g. file:///tmp → /tmp)
+            String localPath = checkpointDir.substring("file://".length());
+
+            // Security Check: prevent directory traversal
+            if (localPath.contains("..")) {
+                String msg = "❌ Invalid checkpoint directory (directory traversal detected): " + localPath;
+                logs.add(msg);
+                return msg;
+            }
+
+            java.io.File dir = new java.io.File(localPath);
+
+            try {
+                // Ensure it resolves to an absolute canonical path (mitigates symlink traversal if needed)
+                String canonicalPath = dir.getCanonicalPath();
+                if (!dir.isAbsolute()) {
+                     String msg = "❌ Checkpoint directory must be an absolute path: " + localPath;
+                     logs.add(msg);
+                     return msg;
+                }
+            } catch (java.io.IOException e) {
+                String msg = "❌ Failed to resolve canonical path for checkpoint directory: " + e.getMessage();
+                logs.add(msg);
+                return msg;
+            }
+
+            if (!dir.exists()) {
+                String msg = "❌ Checkpoint directory does not exist: " + localPath;
+                logs.add(msg);
+                return msg;
+            }
+            if (!dir.isDirectory()) {
+                String msg = "❌ Checkpoint path is not a directory: " + localPath;
+                logs.add(msg);
+                return msg;
+            }
+            logs.add("✅ Checkpoint directory exists on this host: " + localPath
+                    + " (ensure the same path is also mounted in the Flink jobmanager/taskmanager containers)");
+        } else {
+            logs.add("✅ Checkpoint directory existence check skipped for non-local URI (hdfs/s3/etc.)");
+        }
+        return null;
     }
 
     private void saveJobConfig(JobRequest request) {
@@ -338,6 +558,16 @@ public class JobController {
         } else if (systemConfig.getFlink() != null) {
             flink.setCheckpointDir(systemConfig.getFlink().getCheckpointDir());
         }
+
+        // Savepoint restore (optional — only set when user provides a savepoint path)
+        if (request.getSavepointPath() != null && !request.getSavepointPath().isEmpty()) {
+            flink.setSavepointPath(request.getSavepointPath());
+            flink.setAllowNonRestoredState(
+                    Boolean.TRUE.equals(request.getAllowNonRestoredState()));
+            log.info("Job '{}' will restore from savepoint: {}",
+                    request.getJobName(), request.getSavepointPath());
+        }
+
         config.setFlink(flink);
 
         // Audit and reconciliation come from application.yml (system config), not per-job request

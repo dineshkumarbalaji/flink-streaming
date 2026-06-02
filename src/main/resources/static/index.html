@@ -22,6 +22,37 @@
             font-size: 0.85rem;
         }
 
+        /* Savepoint styles */
+        .savepoint-actions { display: flex; gap: 0.75rem; margin-top: 1rem; }
+        .btn-savepoint {
+            background: rgba(99,102,241,0.15); color: #818cf8;
+            border: 1px solid rgba(99,102,241,0.4);
+            padding: 0.4rem 1rem; border-radius: 4px; cursor: pointer;
+            font-size: 0.85rem; font-family: inherit; transition: background 0.2s;
+        }
+        .btn-savepoint:hover { background: rgba(99,102,241,0.3); }
+        .btn-savepoint:disabled { opacity: 0.4; cursor: not-allowed; }
+        .btn-cancel-job {
+            background: rgba(239,68,68,0.12); color: #ef4444;
+            border: 1px solid rgba(239,68,68,0.35);
+            padding: 0.4rem 1rem; border-radius: 4px; cursor: pointer;
+            font-size: 0.85rem; font-family: inherit; transition: background 0.2s;
+        }
+        .btn-cancel-job:hover { background: rgba(239,68,68,0.25); }
+        .savepoint-list { list-style: none; padding: 0; margin: 0.5rem 0 0; }
+        .savepoint-list li {
+            padding: 0.4rem 0; border-bottom: 1px solid var(--border);
+            font-size: 0.8rem; font-family: monospace;
+            display: flex; justify-content: space-between; align-items: center; gap: 0.5rem;
+        }
+        .savepoint-list li:last-child { border-bottom: none; }
+        .btn-copy-path {
+            background: transparent; border: 1px solid var(--border);
+            color: var(--text-muted, #aaa); padding: 0.1rem 0.4rem;
+            border-radius: 3px; cursor: pointer; font-size: 0.75rem; white-space: nowrap;
+        }
+        .btn-copy-path:hover { background: rgba(255,255,255,0.05); }
+
         /* Checkbox & Radio Styles */
         .checkbox-container,
         .radio-container {
@@ -113,6 +144,52 @@
         .job-status.CANCELED  { background: rgba(156,163,175,0.15); color: #9ca3af; }
         .job-status.CREATED   { background: rgba(250,204,21,0.15); color: #facc15; }
         .job-status.UNKNOWN   { background: rgba(156,163,175,0.15); color: #9ca3af; }
+
+        .modal {
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.6);
+            display: flex; justify-content: center; align-items: center;
+            z-index: 1000;
+        }
+        .modal.hidden { display: none; }
+        .modal-content {
+            background: var(--surface);
+            padding: 2rem;
+            border-radius: 8px;
+            width: 80%;
+            max-width: 900px;
+            max-height: 90vh;
+            overflow-y: auto;
+            position: relative;
+        }
+        .close-modal {
+            position: absolute; right: 1.5rem; top: 1.5rem;
+            cursor: pointer; background: none; border: none;
+            color: var(--text); font-size: 1.5rem;
+        }
+        .details-grid {
+            display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; margin-top: 1.5rem;
+        }
+        .details-panel {
+            background: rgba(0,0,0,0.2); padding: 1rem; border-radius: 6px; border: 1px solid var(--border);
+        }
+        .audit-list { list-style: none; padding: 0; margin: 0; }
+        .audit-list li {
+            padding: 0.5rem 0;
+            border-bottom: 1px solid var(--border);
+            font-size: 0.85rem;
+            display: flex; justify-content: space-between;
+        }
+        .audit-list li:last-child { border-bottom: none; }
+        
+        .clickable-row {
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        .clickable-row:hover {
+            background: rgba(255,255,255,0.05);
+        }
     </style>
 </head>
 
@@ -175,6 +252,22 @@
                                 <input type="text" id="checkpointDir" name="checkpointDir"
                                     placeholder="e.g. s3://my-bucket/checkpoints or file:///tmp/flink-checkpoints">
                                 <small style="color:#888;">Local paths require three slashes: <code>file:///absolute/path</code></small>
+                            </div>
+                        </div>
+                        <div class="form-row">
+                            <div class="form-group full">
+                                <label for="savepointPath">Restore from Savepoint (optional)</label>
+                                <input type="text" id="savepointPath" name="savepointPath"
+                                    placeholder="e.g. file:///app/checkpoints/savepoints/savepoint-abc123">
+                                <small style="color:#888;">Leave blank for a fresh job start. Paste a savepoint path from the Dashboard to resume from a prior state.</small>
+                            </div>
+                        </div>
+                        <div class="form-row" id="allowNonRestoredStateRow" style="display:none;">
+                            <div class="form-group full">
+                                <label class="checkbox-container">
+                                    <input type="checkbox" id="allowNonRestoredState" name="allowNonRestoredState">
+                                    Allow non-restored state (drop state for operators absent in savepoint)
+                                </label>
                             </div>
                         </div>
                     </section>
@@ -514,6 +607,51 @@
 
         <div id="notification" class="notification hidden">
             <div class="notification-content"></div>
+        </div>
+        
+        <div id="jobDetailsModal" class="modal hidden">
+            <div class="modal-content">
+                <button class="close-modal" id="closeModalBtn">&times;</button>
+                <h2 id="detailsTitle">Job Details</h2>
+
+                <div class="savepoint-actions">
+                    <button class="btn-savepoint" id="savepointBtn">Take Savepoint</button>
+                    <button class="btn-cancel-job" id="cancelJobBtn">Cancel Job</button>
+                    <span id="savepointStatusMsg" style="font-size:0.85rem;color:#aaa;align-self:center;"></span>
+                </div>
+
+                <div class="details-grid">
+                    <div class="details-panel">
+                        <h3>Configuration Summary</h3>
+                        <div id="configSummary" style="font-family: monospace; font-size: 0.85rem; white-space: pre-wrap; margin-top: 1rem; max-height: 300px; overflow-y: auto;">
+                            Loading...
+                        </div>
+                    </div>
+
+                    <div style="display:flex; flex-direction: column; gap: 1.5rem;">
+                        <div class="details-panel">
+                            <h3>Reconciliation</h3>
+                            <div id="reconciliationData" style="margin-top: 1rem; font-size: 0.9rem;">
+                                Loading...
+                            </div>
+                        </div>
+
+                        <div class="details-panel">
+                            <h3>Savepoints</h3>
+                            <ul id="savepointsList" class="savepoint-list">
+                                <li style="font-family:sans-serif;color:#aaa;font-size:0.85rem;">No savepoints yet.</li>
+                            </ul>
+                        </div>
+
+                        <div class="details-panel" style="flex:1;">
+                            <h3>Recent Audit Events</h3>
+                            <ul id="auditEventsList" class="audit-list">
+                                <li>Loading...</li>
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
 

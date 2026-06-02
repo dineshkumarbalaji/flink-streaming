@@ -33,9 +33,21 @@ Seamlessly ingest and publish data in various formats. The system handles serial
     *   **Event Time**: Extract timestamps from existing message payloads (JSON/Avro) for accurate historical processing.
 
 ### 3.5 Operational Visibility & Management
-*   **Pre-flight Validation**: Validates Kafka connectivity, Topic existence, and SQL syntax before deployment.
+*   **Pre-flight Validation**: Validates Kafka connectivity, topic existence (all sources + target), SQL syntax across all source tables (including multi-source JOINs), and savepoint path format/existence before deployment. Both the `/validate` and `/submit` endpoints enforce these checks independently, so direct API calls are equally safe.
+*   **Savepoint Path Validation**: Savepoint restore paths are validated for correct URI format and local directory existence before the job is submitted, preventing silent failures inside the Flink runtime.
 *   **Configuration Management**: Save and Load job configurations (JSON) to replicate pipelines easily.
 *   **Metrics**: Real-time visibility into records consumed/produced via Flink Dashboard.
+
+### 3.6 Audit & Reconciliation
+*   **Event Tracking**: Granular tracking of source consumption, SQL transformation outputs, and target delivery rates to ensure strong data consistency pipelines.
+*   **Generic Auditing Sinks**: Emits audit telemetry and discrepancy reports flexibly to File System/Console logs, dedicated Kafka Topics, or JDBC databases.
+*   **Discrepancy Reporting**: Dynamically identifies un-reconciled jobs allowing threshold alerting against schema failure tolerances and write-lag.
+*   **Actual Execution Window**: Reconciliation reports display the true elapsed execution time (e.g., `"2m 34s"`, `"1h 15m"`) rather than the configured checkpoint interval, giving an accurate picture of the processing window.
+*   **Eviction Warnings**: When the in-memory audit cache evicts events due to bounded capacity, a `WARN` log is emitted with the running eviction count and a recommendation to enable a persistent sink (JDBC/KAFKA) to retain full history.
+
+### 3.7 Stateful Checkpointing
+*   **Configurable Storage Engine**: Jobs seamlessly map states to `HashMapStateBackend` with user-provided checkpoint directories.
+*   **Recovery and Backpressure**: Employs strictly bounded watermarks with custom directory URIs enabling exact state recovery on intermittent restarts.
 
 ## 4. Use Cases
 
@@ -64,6 +76,23 @@ Seamlessly ingest and publish data in various formats. The system handles serial
 
 ## 5. Getting Started
 1.  **Start Services**: Run `start_app.bat` (Windows) or `docker-compose up -d`.
-2.  **Access UI**: Open `http://localhost:8080`.
+2.  **Access UI**: Open `http://localhost:8082`.
 3.  **Define Job**: Connect to Source Kafka, write SQL, and Connect to Target.
 4.  **Deploy**: Click "Deploy Job" and monitor in Flink Dashboard (`http://localhost:8081`).
+
+---
+
+## 6. Changelog
+
+### v1.0 — Feature 007: Validation & Error Handling Hardening (2026-06-02)
+
+| Area | Change |
+|------|--------|
+| `/submit` endpoint | Validates Kafka source and target topic existence before job submission |
+| `/validate` + `/submit` | Savepoint path is validated for URI format and local existence |
+| SQL validation | All source tables registered in the validator — multi-source JOINs fully checked |
+| Reconciliation report | `windowLabel` now reflects actual elapsed execution time, not checkpoint interval |
+| Audit cache | WARN log emitted when events or jobs are evicted; running eviction counters exposed |
+| Error logging | Flink 1.18 REST client parse errors logged with full exception chain and root cause |
+
+See [src/docs/features/007-validation-and-error-handling-fixes.md](src/docs/features/007-validation-and-error-handling-fixes.md) for full details.

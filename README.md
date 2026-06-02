@@ -67,6 +67,19 @@ Open your browser and go to: **http://localhost:8082**
 
 ---
 
+## Key Features
+
+| Feature | Description |
+|---------|-------------|
+| Multi-source SQL | JOIN across multiple Kafka sources in a single SQL query |
+| Schema validation | JSON Schema and Avro schema validation at source ingestion |
+| Audit & Reconciliation | Per-run record counting with discrepancy reporting (LOG / KAFKA / JDBC sinks) |
+| Savepoint support | Trigger, list, and restore from savepoints without stopping the job |
+| Pre-flight validation | Kafka connectivity, topic existence, SQL syntax, and savepoint path — validated before submission |
+| Watermark support | `PROCESS_TIME` or event-time (`EXISTING` column) watermark strategies |
+
+---
+
 ## Kafka Authentication
 
 Supports secured Kafka clusters via:
@@ -92,16 +105,23 @@ flink-streaming/
 ├── src/
 │   ├── main/
 │   │   ├── java/com/datahondo/flink/streaming/
-│   │   │   ├── config/          # Job, Kafka, Flink, Watermark configs
+│   │   │   ├── audit/           # Audit events, reconciliation, in-memory cache, sinks
+│   │   │   ├── config/          # Job, Kafka, Flink, Watermark, Audit configs
 │   │   │   ├── exception/       # Custom exceptions
-│   │   │   ├── job/             # Job orchestration logic
-│   │   │   ├── source/          # Kafka source layer
+│   │   │   ├── job/             # Job orchestration (StreamingJobOrchestrator)
+│   │   │   ├── savepoint/       # Savepoint trigger, registry, Flink REST client
+│   │   │   ├── source/          # Kafka source layer with schema validation
 │   │   │   ├── target/          # Kafka target/sink layer
 │   │   │   ├── transformation/  # SQL transformation layer
-│   │   │   └── web/             # REST API controllers & models
+│   │   │   └── web/             # REST API controllers, validators & models
 │   │   └── resources/
 │   │       └── static/          # Frontend UI (HTML + JS)
-│   └── test/                    # Unit tests
+│   ├── test/                    # Unit & integration tests (22 test classes)
+│   └── docs/
+│       ├── WORK_AGREEMENT.md    # Engineering standards and TDD workflow
+│       ├── FEATURE_COVERAGE_MATRIX.md
+│       ├── features/            # Per-feature functional docs (001–007)
+│       └── technical/           # Technical design documents
 ├── docker-compose.yml           # Full stack service definitions
 ├── Dockerfile                   # flink-app container build
 ├── pom.xml                      # Maven build configuration

@@ -17,6 +17,8 @@ streaming:
       parallelism: ${FLINK_PARALLELISM:1}
       checkpoint-interval: ${FLINK_CHECKPOINT_INTERVAL:60000}
       checkpoint-dir: ${FLINK_CHECKPOINT_DIR:}
+      savepoint-dir: ${FLINK_SAVEPOINT_DIR:/app/checkpoints/savepoints}
+      savepoint-poll-timeout-ms: ${FLINK_SAVEPOINT_POLL_TIMEOUT_MS:300000}
 
     # Audit and reconciliation sink configuration.
     # Set sink-type to LOG (default), KAFKA, or JDBC.
@@ -24,19 +26,19 @@ streaming:
     #   destination → KAFKA: topic name         | JDBC: table name
     audit:
       enabled: true
-      sink-type: LOG                        # LOG | KAFKA | JDBC
-      connection:                           # KAFKA: kafka:29092  | JDBC: jdbc:postgresql://db:5432/mydb
-      destination: audit-events             # KAFKA: topic name   | JDBC: table name
-      username:                             # JDBC only
-      password:                             # JDBC only
+      sink-type: JDBC
+      connection: jdbc:postgresql://postgres:5432/flinkdb
+      destination: flink_audit_events
+      username: flinkuser
+      password: flinkpassword
 
     reconciliation:
       enabled: true
-      sink-type: LOG                        # LOG | KAFKA | JDBC
-      connection:                           # KAFKA: kafka:29092  | JDBC: jdbc:postgresql://db:5432/mydb
-      destination: reconciliation-reports   # KAFKA: topic name   | JDBC: table name
-      username:                             # JDBC only
-      password:                             # JDBC only
+      sink-type: JDBC
+      connection: jdbc:postgresql://postgres:5432/flinkdb
+      destination: flink_reconciliation_reports
+      username: flinkuser
+      password: flinkpassword
       # window is derived from flink.checkpoint-interval automatically
       tolerance-percent: 0.0
 

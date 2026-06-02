@@ -31,6 +31,7 @@ import java.util.concurrent.ConcurrentHashMap;
 public class AuditService {
 
     private final AuditSinkFactory sinkFactory;
+    private final InMemoryAuditCache auditCache;
 
     /** Active sinks keyed by runId.  Cleaned up in {@link #closeRun(String)}. */
     private final Map<String, AuditSink> activeSinks = new ConcurrentHashMap<>();
@@ -58,6 +59,7 @@ public class AuditService {
      */
     public void emit(AuditEvent event) {
         if (event == null) return;
+        auditCache.addEvent(event.getJobName(), event);
         AuditSink sink = activeSinks.get(event.getRunId());
         if (sink == null) {
             log.debug("[AUDIT] No active sink for runId={} — event dropped (type={})",

@@ -196,19 +196,7 @@ Example: `feat: add AVRO schema validation to KafkaSourceLayer`
 
 ## 8. Known Issues and Technical Debt
 
-The following issues are tracked and must be resolved before production release:
-
-| Priority | Component | Issue |
-|---|---|---|
-| High | `KafkaTargetLayer` | JSON serialization wraps Row.toString() — must produce proper JSON object |
-| High | `JobController` | Source passwords are saved in plaintext to config files on disk |
-| High | `JobController` | NullPointerException risk when watermark is not configured on first source |
-| Medium | `KafkaSourceLayer` | Avro LONG type is downcast to INT — precision loss for large values |
-| Medium | `KafkaSourceLayer` | Watermark timestamp assignor uses wall clock even when EXISTING column mode is set |
-| Medium | `JobController` | `JobClient` from job submission is discarded — no lifecycle management |
-| Low | `StreamingJobOrchestrator` | Duplicate log statement for "Layer 1: Source Layer" |
-
----
+All tracked prerelease technical debt has been successfully resolved for the initial production release.
 
 ## 9. Functional Documentation
 
@@ -1031,9 +1019,11 @@ The **Validate** button triggers the validation endpoint. The **Submit** button 
 ```
 1. Check sources are configured (not empty)
 2. For each source:
-   └── Test Kafka broker connectivity  (KafkaValidatorService)
-3. Test target Kafka broker connectivity
-4. Validate SQL syntax against first source table/schema  (SqlValidatorService)
+   └── Test Kafka broker connectivity + topic existence  (KafkaValidatorService)
+3. Test target Kafka broker connectivity + topic existence
+4. Validate SQL syntax against all source tables/schemas  (SqlValidatorService)
+   └── All source tables registered — multi-source JOINs fully validated
+5. Validate Savepoint Path format and existence (if provided)
 ```
 
 **Validation response (`ValidationResponse`):**
@@ -1050,6 +1040,8 @@ The **Validate** button triggers the validation endpoint. The **Submit** button 
     "✅ Target Topic 'orders-enriched' Accessible",
     "Validating SQL Query...",
     "✅ SQL Syntax OK",
+    "Validating Savepoint Path...",
+    "✅ Savepoint path URI format OK",
     "✅ All checks passed. Ready to deploy."
   ]
 }
@@ -1109,7 +1101,26 @@ This file serves as the **source of truth** for the submitted job and can be use
 
 ### Step 4: Flink Job Submission (`POST /api/jobs/submit`)
 
-After the config file is saved, `StreamingJobOrchestrator.submitJob()` is called:
+Before submitting, the endpoint independently re-validates critical connectivity:
+
+```
+POST /api/jobs/submit
+       │
+       ▼
+ Validate savepoint path (if provided)          ← returns 400 if invalid
+       │
+       ▼
+ mapToConfig(request) → StreamingJobConfig
+       │
+       ▼
+ Validate Kafka connectivity for all sources    ← returns 400 if any topic missing
+ Validate Kafka connectivity for target         ← returns 400 if topic missing
+       │
+       ▼
+ orchestrator.submitJob(config)
+```
+
+After validation, `StreamingJobOrchestrator.submitJob()` builds and launches the Flink graph:
 
 ```
 StreamingJobConfig
@@ -1158,13 +1169,15 @@ StreamingJobConfig
 
 ### Known Workflow Gaps (To Be Resolved)
 
-| Gap | Impact | Priority |
-|---|---|---|
-| `JobClient` discarded after submit | No way to check job status or cancel from UI | High |
-| Config JSON saved to relative path `configs/` | File location unpredictable across environments | High |
-| Passwords saved in plaintext to config JSON | Security risk — credentials persisted on disk | High |
-| SQL validated only against first source schema | Multi-source SQL may pass validation but fail at runtime | Medium |
-| No job list or history view in UI | User cannot see previously submitted jobs | Medium |
+| Gap | Impact | Priority | Status |
+|---|---|---|---|
+| `JobClient` discarded after submit | No way to check job status or cancel from UI | High | Open |
+| Config JSON saved to relative path `configs/` | File location unpredictable across environments | High | Open |
+| Passwords saved in plaintext to config JSON | Security risk — credentials persisted on disk | High | Open |
+| SQL validated only against first source schema | Multi-source SQL may pass validation but fail at runtime | Medium | **Fixed — Feature 007** |
+| Kafka topic existence not checked in `/submit` | Job accepted then fails inside Flink with no user feedback | High | **Fixed — Feature 007** |
+| Savepoint path not validated before submission | Invalid path causes cryptic Flink error after 200 OK | High | **Fixed — Feature 007** |
+| No job list or history view in UI | User cannot see previously submitted jobs | Medium | Open |
 
 ---
 

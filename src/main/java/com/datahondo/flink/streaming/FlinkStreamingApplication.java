@@ -8,6 +8,7 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 
 @SpringBootApplication
 @EnableConfigurationProperties(StreamingJobConfig.class)
+@org.springframework.scheduling.annotation.EnableScheduling
 public class FlinkStreamingApplication {
 
     public static void main(String[] args) {

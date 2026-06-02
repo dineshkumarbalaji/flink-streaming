@@ -7,11 +7,15 @@ import com.datahondo.flink.streaming.audit.ReconciliationService;
 import com.datahondo.flink.streaming.audit.RunContext;
 import com.datahondo.flink.streaming.config.SourceConfig;
 import com.datahondo.flink.streaming.config.StreamingJobConfig;
+import com.datahondo.flink.streaming.savepoint.SavepointException;
+import com.datahondo.flink.streaming.savepoint.SavepointRecord;
+import com.datahondo.flink.streaming.savepoint.SavepointService;
 import com.datahondo.flink.streaming.source.SourceLayer;
 import com.datahondo.flink.streaming.target.TargetLayer;
 import com.datahondo.flink.streaming.transformation.TransformationLayer;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.execution.JobClient;
 import org.apache.flink.runtime.state.hashmap.HashMapStateBackend;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
@@ -22,12 +26,14 @@ import org.springframework.stereotype.Service;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 
 /**
  * Orchestrates the three-layer Flink pipeline (Source → Transformation → Target)
@@ -54,9 +60,10 @@ public class StreamingJobOrchestrator {
     private final TargetLayer targetLayer;
     private final AuditService auditService;
     private final ReconciliationService reconciliationService;
+    private final SavepointService savepointService;
 
     /** In-flight jobs: jobName → (JobClient, RunContext, windowStart). */
-    private final Map<String, JobClient>  runningJobs    = new LinkedHashMap<>();
+    private final Map<String, JobClient>  runningJobs    = new ConcurrentHashMap<>();
     private final Map<String, RunContext> runContexts    = new ConcurrentHashMap<>();
     private final Map<String, Instant>   windowStarts   = new ConcurrentHashMap<>();
 
@@ -68,12 +75,16 @@ public class StreamingJobOrchestrator {
                 return t;
             });
 
+    private final ObjectMapper mapper = new ObjectMapper()
+            .registerModule(new JavaTimeModule())
+            .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
+
     // ── Public API ────────────────────────────────────────────────────────────
 
     public List<Map<String, String>> getRunningJobs() {
         List<Map<String, String>> result = new ArrayList<>();
         runningJobs.forEach((name, client) -> {
-            Map<String, String> info = new LinkedHashMap<>();
+            Map<String, String> info = new HashMap<>();
             info.put("jobName", name);
             info.put("jobId", client.getJobID().toString());
             info.put("runId", runContexts.containsKey(name)
@@ -160,6 +171,32 @@ public class StreamingJobOrchestrator {
         }
     }
 
+    /**
+     * Triggers a savepoint for the named running job without cancelling it.
+     * Blocks until the savepoint completes or the configured timeout elapses.
+     *
+     * @param jobName    logical job name
+     * @param config     system streaming config (provides host, port, savepoint dir, timeout)
+     * @return completed {@link SavepointRecord}
+     * @throws IllegalArgumentException if no running job with that name exists
+     * @throws SavepointException       if the savepoint fails or times out
+     */
+    public SavepointRecord triggerSavepoint(String jobName, StreamingJobConfig config)
+            throws SavepointException {
+        JobClient client = runningJobs.get(jobName);
+        if (client == null) {
+            throw new IllegalArgumentException("No running job found with name: " + jobName);
+        }
+        String jobId = client.getJobID().toString();
+        String targetDir = config.getFlink().getSavepointDir();
+        long timeout = config.getFlink().getSavepointPollTimeoutMs() != null
+                ? config.getFlink().getSavepointPollTimeoutMs() : 300_000L;
+
+        return savepointService.triggerSavepoint(
+                config.getFlink().getHost(), config.getFlink().getPort(),
+                jobId, jobName, targetDir, false, timeout);
+    }
+
     public void cancelJob(String jobName) throws Exception {
         JobClient client = runningJobs.get(jobName);
         if (client == null) {
@@ -191,9 +228,38 @@ public class StreamingJobOrchestrator {
                 auditService.emitLifecycle(runCtx.getRunId(), jobName,
                         AuditEventType.JOB_COMPLETED, null);
             } catch (Exception ex) {
-                log.warn("[AUDIT] Job '{}' ended with error: {}", jobName, ex.getMessage());
+                // Flink 1.18 REST client bug: when a job fails during initialization
+                // (before it starts running), the server returns a terminal job-execution-result
+                // response that the client cannot parse as ErrorResponseBody, causing an
+                // UnrecognizedPropertyException. In that case we fall back to the job status API
+                // to retrieve the actual failure cause.
+                String errorMessage;
+                Throwable cause = ex.getCause() != null ? ex.getCause() : ex;
+                if (cause.getClass().getSimpleName().contains("UnrecognizedPropertyException")) {
+                    log.warn("[AUDIT] Flink 1.18 REST client parse error for job '{}' — falling back"
+                            + " to status API. Parse error: {}", jobName, ex.getMessage(), ex);
+                    try {
+                        org.apache.flink.api.common.JobStatus status =
+                                client.getJobStatus().get();
+                        errorMessage = "Job reached terminal state " + status
+                                + " — Flink REST client could not parse the execution result"
+                                + " (likely a job initialization failure; check JobManager logs"
+                                + " for the root cause). Parse error: " + ex.getMessage();
+                    } catch (Exception statusEx) {
+                        log.warn("[AUDIT] Status API also failed for job '{}': {}",
+                                jobName, statusEx.getMessage(), statusEx);
+                        errorMessage = "Job failed — execution result unparseable and status"
+                                + " unretrievable. Parse error: " + ex.getMessage()
+                                + "; Status error: " + statusEx.getMessage()
+                                + " — check JobManager logs for the root cause.";
+                    }
+                } else {
+                    log.warn("[AUDIT] Job '{}' ended with error: {}", jobName,
+                            rootCauseMessage(ex), ex);
+                    errorMessage = rootCauseMessage(ex);
+                }
                 Map<String, String> meta = new HashMap<>();
-                meta.put("error", ex.getMessage());
+                meta.put("error", errorMessage);
                 auditService.emitLifecycle(runCtx.getRunId(), jobName,
                         AuditEventType.JOB_FAILED, meta);
             } finally {
@@ -205,7 +271,6 @@ public class StreamingJobOrchestrator {
 
     private void triggerReconciliation(String jobName, JobClient client,
                                         RunContext runCtx, Instant windowStart) {
-        if (!runCtx.isReconciliationEnabled()) return;
         try {
             Map<String, Object> accumulators = client.getAccumulators().get();
             // Derive per-source accumulator name from the first source table, or fall back
@@ -219,12 +284,41 @@ public class StreamingJobOrchestrator {
 
             log.info("[RECONCILIATION] Job '{}' counts: {}", jobName, counts);
 
-            reconciliationService.reconcile(runCtx, windowStart, counts);
+            if (runCtx.isAuditEnabled()) {
+                auditService.emitCount(runCtx.getRunId(), jobName, AuditEventType.SOURCE_READ, "source", counts.sourceRead, null);
+                auditService.emitCount(runCtx.getRunId(), jobName, AuditEventType.SOURCE_REJECTED, "source", counts.schemaRejected, null);
+                auditService.emitCount(runCtx.getRunId(), jobName, AuditEventType.TRANSFORM_OUTPUT, "transform", counts.transformed, null);
+                auditService.emitCount(runCtx.getRunId(), jobName, AuditEventType.TARGET_WRITTEN, "target", counts.targetWritten, null);
+            }
+
+            if (runCtx.isReconciliationEnabled()) {
+                reconciliationService.reconcile(runCtx, windowStart, counts);
+            }
 
         } catch (Exception e) {
             log.warn("[RECONCILIATION] Failed to read accumulators for job '{}': {}",
                     jobName, e.getMessage());
         }
+    }
+
+    @org.springframework.scheduling.annotation.Scheduled(fixedRateString = "${flink.streaming.audit.poll-interval:10000}")
+    public void pollRunningJobs() {
+        if (runningJobs.isEmpty()) return;
+        new ArrayList<>(runningJobs.keySet()).forEach(jobName -> {
+            JobClient client = runningJobs.get(jobName);
+            RunContext runCtx = runContexts.get(jobName);
+            Instant windowStart = windowStarts.get(jobName);
+            if (client != null && runCtx != null && windowStart != null) {
+                try {
+                    org.apache.flink.api.common.JobStatus status = client.getJobStatus().get();
+                    if (status == org.apache.flink.api.common.JobStatus.RUNNING) {
+                        triggerReconciliation(jobName, client, runCtx, windowStart);
+                    }
+                } catch (Exception e) {
+                    log.debug("Could not poll status for job '{}': {}", jobName, e.getMessage());
+                }
+            }
+        });
     }
 
     private void cleanup(String jobName, String runId) {
@@ -237,16 +331,40 @@ public class StreamingJobOrchestrator {
     // ── Flink environment ─────────────────────────────────────────────────────
 
     private StreamExecutionEnvironment buildFlinkEnvironment(StreamingJobConfig config) {
+        Configuration flinkConf = buildFlinkConfiguration(config);
+
         if (config.getFlink().isRemote()) {
-            log.info("Creating REMOTE Flink environment: {}:{}",
-                    config.getFlink().getHost(), config.getFlink().getPort());
+            log.info("Creating REMOTE Flink environment: {}:{}{}",
+                    config.getFlink().getHost(), config.getFlink().getPort(),
+                    config.getFlink().getSavepointPath() != null
+                            ? " [restoring from savepoint]" : "");
             return StreamExecutionEnvironment.createRemoteEnvironment(
                     config.getFlink().getHost(),
                     config.getFlink().getPort(),
+                    flinkConf,
                     config.getFlink().getJarPath());
         }
-        log.info("Creating LOCAL Flink environment");
-        return StreamExecutionEnvironment.getExecutionEnvironment();
+        log.info("Creating LOCAL Flink environment{}",
+                config.getFlink().getSavepointPath() != null ? " [restoring from savepoint]" : "");
+        return StreamExecutionEnvironment.getExecutionEnvironment(flinkConf);
+    }
+
+    /**
+     * Builds a Flink {@link Configuration} from the job config.
+     * Includes savepoint restore settings when a savepoint path is specified.
+     */
+    private Configuration buildFlinkConfiguration(StreamingJobConfig config) {
+        Configuration conf = new Configuration();
+        String savepointPath = config.getFlink().getSavepointPath();
+        if (savepointPath != null && !savepointPath.isEmpty()) {
+            conf.setString("execution.savepoint.path", savepointPath);
+            log.info("[SAVEPOINT] Restoring from savepoint: {}", savepointPath);
+            if (Boolean.TRUE.equals(config.getFlink().getAllowNonRestoredState())) {
+                conf.setBoolean("execution.savepoint.ignore-unclaimed-state", true);
+                log.info("[SAVEPOINT] allowNonRestoredState=true");
+            }
+        }
+        return conf;
     }
 
     private void configureFlinkEnvironment(StreamExecutionEnvironment env,
@@ -261,7 +379,7 @@ public class StreamingJobOrchestrator {
             env.getCheckpointConfig().setMaxConcurrentCheckpoints(
                     config.getFlink().getMaxConcurrentCheckpoints());
         }
-        if (config.getFlink().getCheckpointDir() != null) {
+        if (config.getFlink().getCheckpointDir() != null && !config.getFlink().getCheckpointDir().isEmpty()) {
             env.setStateBackend(new HashMapStateBackend());
             env.getCheckpointConfig().setCheckpointStorage(config.getFlink().getCheckpointDir());
         }
@@ -272,12 +390,24 @@ public class StreamingJobOrchestrator {
 
     // ── Metadata helpers ──────────────────────────────────────────────────────
 
+    private static String rootCauseMessage(Throwable t) {
+        Throwable root = t;
+        while (root.getCause() != null) root = root.getCause();
+        return (root == t) ? t.getMessage()
+                : t.getMessage() + " (root cause: " + root.getMessage() + ")";
+    }
+
     private Map<String, String> buildJobMeta(StreamingJobConfig config, RunContext runCtx) {
         Map<String, String> meta = new HashMap<>();
         meta.put("runId", runCtx.getRunId());
         meta.put("jobName", config.getJobName());
         meta.put("parallelism", String.valueOf(
                 config.getFlink() != null ? config.getFlink().getParallelism() : 1));
+        try {
+            meta.put("jobConfig", mapper.writeValueAsString(config));
+        } catch (Exception e) {
+            log.warn("Failed to serialize jobConfig for meta", e);
+        }
         return meta;
     }
 }

@@ -41,6 +41,12 @@ public class JobRequest {
     private Long checkpointInterval;
     private String checkpointDir;
 
+    // Savepoint restore (optional — omit for a fresh job start)
+    /** Path to an existing savepoint to restore from, e.g. {@code file:///app/checkpoints/savepoints/savepoint-abc}. */
+    private String savepointPath;
+    /** When true, state from operators not present in the savepoint is silently dropped. */
+    private Boolean allowNonRestoredState;
+
     @Data
     public static class SourceJobRequest {
         private String sourceTopic;

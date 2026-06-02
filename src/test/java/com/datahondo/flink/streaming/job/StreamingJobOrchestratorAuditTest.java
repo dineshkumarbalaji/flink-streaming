@@ -20,6 +20,8 @@ import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 
 import java.util.Collections;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
@@ -134,6 +136,52 @@ class StreamingJobOrchestratorAuditTest {
     @Test
     void getRunningJobs_returnsEmptyList_whenNoJobsSubmitted() {
         assertTrue(orchestrator.getRunningJobs().isEmpty());
+    }
+
+    // ── Thread safety: runningJobs map ────────────────────────────────────────
+
+    /**
+     * Verifies that concurrent calls to pollRunningJobs (scheduler thread) and submitJob
+     * (HTTP thread) do not throw ConcurrentModificationException.
+     *
+     * With a plain LinkedHashMap this test is likely to fail intermittently;
+     * with ConcurrentHashMap it must always pass.
+     */
+    @Test
+    void pollRunningJobs_concurrentWithSubmit_doesNotThrowConcurrentModificationException()
+            throws InterruptedException {
+        StreamingJobConfig cfg = minimalConfig(false);
+        when(transformationLayer.applyTransformation(any(), any())).thenReturn(mock(Table.class));
+
+        AtomicReference<Throwable> threadError = new AtomicReference<>();
+        CountDownLatch startLatch = new CountDownLatch(1);
+        int pollIterations = 500;
+
+        Thread pollerThread = new Thread(() -> {
+            try {
+                startLatch.await();
+                for (int i = 0; i < pollIterations; i++) {
+                    orchestrator.pollRunningJobs();
+                }
+            } catch (Throwable t) {
+                threadError.set(t);
+            }
+        });
+        pollerThread.setDaemon(true);
+        pollerThread.start();
+
+        startLatch.countDown();
+        for (int i = 0; i < 50; i++) {
+            try { orchestrator.submitJob(cfg); } catch (Exception ignored) {}
+        }
+
+        pollerThread.join(5_000);
+
+        assertNull(threadError.get(),
+                () -> "Concurrent access error — likely ConcurrentModificationException on runningJobs: "
+                        + (threadError.get() != null
+                           ? threadError.get().getClass().getSimpleName() + ": " + threadError.get().getMessage()
+                           : "none"));
     }
 
     // ── Audit disabled path ───────────────────────────────────────────────────

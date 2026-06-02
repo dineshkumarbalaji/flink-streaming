@@ -5,7 +5,6 @@ import com.datahondo.flink.streaming.audit.AuditCountingMapFunction;
 import com.datahondo.flink.streaming.config.AuthConfig;
 import com.datahondo.flink.streaming.config.KafkaConfig;
 import com.datahondo.flink.streaming.config.TargetConfig;
-import org.apache.flink.api.common.accumulators.LongCounter;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.connector.kafka.sink.KafkaRecordSerializationSchema;
 import org.apache.flink.connector.kafka.sink.KafkaSink;
@@ -78,7 +77,7 @@ public class KafkaTargetLayer implements TargetLayer {
         // startNewChain() breaks the chain from Table API operators so this
         // appears as a distinct "Transformation" node in the Flink job graph.
         DataStream<Row> resultStream = tableEnv.toDataStream(resultTable)
-                .map(new AuditCountingMapFunction(AuditAccumulators.TRANSFORM_OUT))
+                .map(new AuditCountingMapFunction<>(AuditAccumulators.TRANSFORM_OUT))
                 .startNewChain()
                 .name("Transformation")
                 .uid("audit-transform-out");
@@ -91,18 +90,31 @@ public class KafkaTargetLayer implements TargetLayer {
         SingleOutputStreamOperator<byte[]> serializedStream;
 
         if (FORMAT_JSON.equalsIgnoreCase(format)) {
-            serializedStream = resultStream.map(row -> {
-                java.util.Map<String, Object> map = new java.util.LinkedHashMap<>();
-                java.util.Set<String> nameSet = row.getFieldNames(true);
-                String[] names = (nameSet != null) ? nameSet.toArray(new String[0]) : new String[0];
-                for (int i = 0; i < row.getArity(); i++) {
-                    String key = (i < names.length) ? names[i] : "f" + i;
-                    map.put(key, row.getField(i));
-                }
-                return JSON_MAPPER.writeValueAsBytes(map);
-            }).startNewChain()
-              .name("Sink: Serializer (JSON) [" + targetTopic + "]")
-              .uid("json-serializer");
+            org.apache.flink.api.common.typeinfo.TypeInformation<Row> typeInfo = resultStream.getType();
+            if (typeInfo instanceof org.apache.flink.api.java.typeutils.RowTypeInfo) {
+                org.apache.flink.formats.json.JsonRowSerializationSchema jsonSchema =
+                        org.apache.flink.formats.json.JsonRowSerializationSchema.builder()
+                                .withTypeInfo(typeInfo)
+                                .build();
+                serializedStream = resultStream.map(row -> jsonSchema.serialize(row))
+                  .startNewChain()
+                  .name("Sink: Serializer (JSON) [" + targetTopic + "]")
+                  .uid("json-serializer");
+            } else {
+                // Fallback for non-RowTypeInfo streams
+                serializedStream = resultStream.map(row -> {
+                    java.util.Map<String, Object> map = new java.util.LinkedHashMap<>();
+                    java.util.Set<String> nameSet = row.getFieldNames(true);
+                    String[] names = (nameSet != null) ? nameSet.toArray(new String[0]) : new String[0];
+                    for (int i = 0; i < row.getArity(); i++) {
+                        String key = (i < names.length) ? names[i] : "f" + i;
+                        map.put(key, row.getField(i));
+                    }
+                    return JSON_MAPPER.writeValueAsBytes(map);
+                }).startNewChain()
+                  .name("Sink: Serializer (JSON) [" + targetTopic + "]")
+                  .uid("json-serializer");
+            }
 
         } else if (FORMAT_AVRO.equalsIgnoreCase(format)) {
             String schemaStr = (targetConfig.getSchema() != null) ? targetConfig.getSchema().getDefinition() : null;
@@ -129,6 +141,9 @@ public class KafkaTargetLayer implements TargetLayer {
         }
 
         serializedStream
+                .map(new AuditCountingMapFunction<>(AuditAccumulators.TARGET_WRITTEN_ALL))
+                .name("Target Written Metric")
+                .uid("target-written-metric")
                 .sinkTo(kafkaSink)
                 .uid("kafka-sink-" + targetConfig.getKafka().getTopic())
                 .name("Kafka Sink");
@@ -142,7 +157,6 @@ public class KafkaTargetLayer implements TargetLayer {
         private final String topicName;
         private transient Schema schema;
         private transient GenericDatumWriter<GenericRecord> writer;
-        private transient LongCounter writtenCounter;
 
         public AvroRowSerializer(String schemaStr, String topicName) {
             this.schemaStr = schemaStr;
@@ -159,8 +173,6 @@ public class KafkaTargetLayer implements TargetLayer {
             try {
                 this.schema = new Schema.Parser().parse(schemaStr);
                 this.writer = new GenericDatumWriter<>(schema);
-                this.writtenCounter = getRuntimeContext()
-                        .getLongCounter(AuditAccumulators.targetWritten(topicName));
             } catch (Exception e) {
                 log.error("Failed to parse Avro schema", e);
                 throw new RuntimeException("Invalid Avro Schema", e);
@@ -170,51 +182,41 @@ public class KafkaTargetLayer implements TargetLayer {
         @Override
         public byte[] map(Row row) throws Exception {
             if (schema == null) return new byte[0];
-            
+
             try (ByteArrayOutputStream out = new ByteArrayOutputStream()) {
                 GenericRecord record = new GenericData.Record(schema);
-                // Map Row fields to Avro fields by index? 
-                // Or by name if Row has headers (Table API result usually keeps names in schema but Row might lose them depending on conversion).
-                // resultTable.toDataStream() produces Row. 
-                // We assume order matches.
-                
-                int i = 0;
+
                 for (Schema.Field field : schema.getFields()) {
-                    if (i >= row.getArity()) break;
-                    Object val = row.getField(i);
-                    // Basic type conversion might be needed here. 
-                    // Avro is picky. Integer vs int, etc.
-                    // For now, pass raw and hope for best or toString it if String type.
-                    if (val != null) {
-                        // Handle Type Conversions for Avro
-                        if (val instanceof java.time.Instant) {
-                            val = ((java.time.Instant) val).toEpochMilli();
-                        } else if (val instanceof java.time.LocalDateTime) {
-                            // Flink LocalDateTime is often treated as local. 
-                            // Converting to Instant requires Zone. We'll use system default or UTC.
-                            val = ((java.time.LocalDateTime) val).atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli();
-                        } else if (val instanceof java.sql.Timestamp) {
-                            val = ((java.sql.Timestamp) val).getTime();
-                        } else if (val instanceof CharSequence) {
-                            val = val.toString();
-                        }
-                        
-                        record.put(field.name(), val);
+                    // Look up by field name so that Row column order does not need to
+                    // match Avro schema field order. Row objects from tableEnv.toDataStream()
+                    // in Flink 1.18 are named rows and support getField(String).
+                    Object val = row.getField(field.name());
+                    if (val == null) continue;
+
+                    // Type conversions required by Avro
+                    if (val instanceof java.time.Instant) {
+                        val = ((java.time.Instant) val).toEpochMilli();
+                    } else if (val instanceof java.time.LocalDateTime) {
+                        val = ((java.time.LocalDateTime) val)
+                                .atZone(java.time.ZoneId.systemDefault())
+                                .toInstant().toEpochMilli();
+                    } else if (val instanceof java.sql.Timestamp) {
+                        val = ((java.sql.Timestamp) val).getTime();
+                    } else if (val instanceof CharSequence) {
+                        val = val.toString();
                     }
-                    i++;
+
+                    record.put(field.name(), val);
                 }
-                
+
                 Encoder encoder = EncoderFactory.get().binaryEncoder(out, null);
                 writer.write(record, encoder);
                 encoder.flush();
-                writtenCounter.add(1L);
                 return out.toByteArray();
-                
+
             } catch (Exception e) {
-                log.error("Avro serialization error: " + e.getMessage());
-                // Fallback or rethrow? rethrow to fail job explicitly if requested?
-                // Or return empty to drop.
-                throw e; 
+                log.error("Avro serialization error: {}", e.getMessage());
+                throw e;
             }
         }
     }

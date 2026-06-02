@@ -137,6 +137,13 @@
             <artifactId>json-schema-validator</artifactId>
             <version>1.0.86</version>
         </dependency>
+
+        <!-- PostgreSQL -->
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>runtime</scope>
+        </dependency>
     </dependencies>
 
     <build>
