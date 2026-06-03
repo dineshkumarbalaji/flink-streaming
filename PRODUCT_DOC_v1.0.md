@@ -96,3 +96,18 @@ Seamlessly ingest and publish data in various formats. The system handles serial
 | Error logging | Flink 1.18 REST client parse errors logged with full exception chain and root cause |
 
 See [src/docs/features/007-validation-and-error-handling-fixes.md](src/docs/features/007-validation-and-error-handling-fixes.md) for full details.
+
+### v1.0 — Feature 008: Job Audit Table, Dashboard & Infrastructure (2026-06-02)
+
+| Area | Change |
+|------|--------|
+| Job Audit Table | Persistent `job_audit_records` table (JPA) records every submission — status, parallelism, config snapshot, timestamps |
+| Dashboard REST API | `GET /api/dashboard/jobs`, `GET /api/dashboard/jobs/{id}`, `POST /api/dashboard/jobs/{id}/stop`, `DELETE /api/dashboard/jobs/{id}` |
+| Job History UI | Dashboard tab shows live job history with colour-coded status badges, stop/delete controls, 30 s auto-refresh |
+| Status polling | `JobStatusPoller` (@Scheduled every 30 s) tracks live `JobClient` callbacks and updates audit records |
+| DLQ routing | Schema-invalid records routed to a configurable dead-letter Kafka topic via Flink side outputs (`OutputTag`) |
+| RocksDB backend | `stateBackend: ROCKSDB` config option; falls back to HashMapStateBackend if unavailable |
+| Savepoint persistence | `SavepointRegistry` persists history to disk (`<configDir>/<job>-savepoints.json`); survives restarts |
+| Configurable config dir | `JOB_CONFIG_DIR` env var / `streaming.job.flink.config-dir` replaces all hardcoded `configs/` paths |
+
+See [src/docs/features/008-job-audit-table-dashboard.md](src/docs/features/008-job-audit-table-dashboard.md) for full details.

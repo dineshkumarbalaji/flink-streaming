@@ -120,7 +120,7 @@ flink-streaming/
 │   └── docs/
 │       ├── WORK_AGREEMENT.md    # Engineering standards and TDD workflow
 │       ├── FEATURE_COVERAGE_MATRIX.md
-│       ├── features/            # Per-feature functional docs (001–007)
+│       ├── features/            # Per-feature functional docs (001–008)
 │       └── technical/           # Technical design documents
 ├── docker-compose.yml           # Full stack service definitions
 ├── Dockerfile                   # flink-app container build

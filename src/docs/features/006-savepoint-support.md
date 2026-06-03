@@ -112,7 +112,9 @@ across jobmanager, taskmanager, and flink-app from the docker-compose changes in
 
 ## Known Limitations
 
-- `SavepointRegistry` is in-memory only — savepoint history is lost on app restart.
-  A future enhancement (007) should persist it alongside `configs/{jobName}.json`.
 - `triggerSavepoint` blocks the HTTP thread for the duration of the poll loop.
   A future enhancement could make it async with a status-polling endpoint.
+
+> **Fixed — Feature 008:** `SavepointRegistry` now persists savepoint history to disk
+> (`<configDir>/<jobName>-savepoints.json`). `@PostConstruct loadFromDisk()` restores history
+> on startup; `persistToDisk()` is called after every `register()`. History survives restarts.

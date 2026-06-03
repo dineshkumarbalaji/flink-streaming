@@ -217,7 +217,7 @@
 | pom.xml: spring-boot-starter-data-jpa + h2 | `pom.xml` | ✅ | H2 default, PostgreSQL via env vars |
 | Job History UI panel | `static/index.html` + `app.js` | ✅ | Table with stop/delete, 30 s auto-refresh |
 
-## 12. Feature 009 — Future Enhancements (Infrastructure)
+## 12. Feature 008 (cont.) — DLQ / RocksDB / Savepoint Persistence
 
 | Feature | Class | Status | Notes |
 |---------|-------|--------|-------|
@@ -245,5 +245,5 @@
 | End-to-End | 8 | 4 | 4 | 0 | 0 |
 | Feature 007 — Validation & Error Hardening | 12 | 12 | 0 | 0 | 0 |
 | Feature 008 — Job Audit Table & Dashboard | 10 | 8 | 0 | 2 | 0 |
-| Feature 009 — DLQ / RocksDB / Savepoint Persistence | 7 | 7 | 0 | 0 | 0 |
+| Feature 008 (cont.) — DLQ / RocksDB / Savepoint Persistence | 7 | 7 | 0 | 0 | 0 |
 | **Total** | **119** | **96 (81%)** | **6 (5%)** | **17 (14%)** | **0 (0%)** |

@@ -1177,7 +1177,7 @@ StreamingJobConfig
 | SQL validated only against first source schema | Multi-source SQL may pass validation but fail at runtime | Medium | **Fixed — Feature 007** |
 | Kafka topic existence not checked in `/submit` | Job accepted then fails inside Flink with no user feedback | High | **Fixed — Feature 007** |
 | Savepoint path not validated before submission | Invalid path causes cryptic Flink error after 200 OK | High | **Fixed — Feature 007** |
-| No job list or history view in UI | User cannot see previously submitted jobs | Medium | Open |
+| No job list or history view in UI | User cannot see previously submitted jobs | Medium | **Fixed — Feature 008** |
 
 ---
 
