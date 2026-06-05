@@ -37,6 +37,9 @@ public class SchemaRegistryClient {
     public SchemaRegistryClient(SchemaConfig config) {
         this.config = config;
         this.httpClient = buildHttpClient(config);
+        boolean tlsEnabled = config.getTls() != null && config.getTls().isEnabled();
+        log.info("[SCHEMA-REGISTRY] Client initialised — url={} sasl={} tls={}",
+                config.getRegistryUrl(), config.getSaslMechanism(), tlsEnabled);
     }
 
     /**
@@ -130,6 +133,7 @@ public class SchemaRegistryClient {
                     .setDefaultRequestConfig(reqConfig)
                     .build();
         } catch (Exception e) {
+            log.error("[SCHEMA-REGISTRY] Failed to build TLS HttpClient: {}", e.getMessage(), e);
             throw new RuntimeException("Failed to build TLS HttpClient for Schema Registry: "
                     + e.getMessage(), e);
         }

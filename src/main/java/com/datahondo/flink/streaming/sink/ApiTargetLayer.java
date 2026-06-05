@@ -90,6 +90,10 @@ public class ApiTargetLayer implements TargetLayer {
         @Override
         public void open(Configuration parameters) throws Exception {
             super.open(parameters);
+            ApiAuthConfig.AuthType authType = config.getApiAuth() != null
+                    ? config.getApiAuth().getType() : null;
+            log.info("[API-SINK] Initialising HttpRowSinkFunction — url={} method={} batchSize={} auth={}",
+                    config.getUrl(), config.getMethod(), config.getApiBatchSize(), authType);
             httpClient = HttpClientFactory.build(
                     config.getApiAuth(),
                     config.getConnectTimeoutMs(),
@@ -97,6 +101,7 @@ public class ApiTargetLayer implements TargetLayer {
             if (config.getApiAuth() != null
                     && config.getApiAuth().getType() == ApiAuthConfig.AuthType.OAUTH2) {
                 oauthManager = new OAuthTokenManager(config.getApiAuth());
+                log.info("[API-SINK] OAuth2 token manager initialised for {}", config.getApiAuth().getTokenUrl());
             }
             mapper = new ObjectMapper();
             buffer = new ArrayList<>();

@@ -122,6 +122,10 @@ public class ApiSourceLayer implements SourceLayer {
         @Override
         public void open(org.apache.flink.configuration.Configuration parameters) throws Exception {
             super.open(parameters);
+            ApiAuthConfig.AuthType authType = config.getApiAuth() != null
+                    ? config.getApiAuth().getType() : null;
+            log.info("[API-SOURCE] Initialising RestPollingSourceFunction — url={} method={} interval={}ms auth={}",
+                    config.getUrl(), config.getMethod(), config.getPollIntervalMs(), authType);
             httpClient = HttpClientFactory.build(
                     config.getApiAuth(),
                     config.getConnectTimeoutMs(),
@@ -129,6 +133,7 @@ public class ApiSourceLayer implements SourceLayer {
             if (config.getApiAuth() != null
                     && config.getApiAuth().getType() == ApiAuthConfig.AuthType.OAUTH2) {
                 oauthManager = new OAuthTokenManager(config.getApiAuth());
+                log.info("[API-SOURCE] OAuth2 token manager initialised for {}", config.getApiAuth().getTokenUrl());
             }
             mapper = new ObjectMapper();
         }
@@ -161,14 +166,20 @@ public class ApiSourceLayer implements SourceLayer {
                     return execute();
                 } catch (IOException e) {
                     lastEx = e;
+                    log.warn("[API-SOURCE] Attempt {}/{} failed for {} — {}: {}",
+                            i + 1, attempts, config.getUrl(),
+                            e.getClass().getSimpleName(), e.getMessage());
                     if (i < attempts - 1) {
-                        try { Thread.sleep(backoff * (1L << i)); } catch (InterruptedException ie) {
+                        long sleepMs = backoff * (1L << i);
+                        log.debug("[API-SOURCE] Backing off {}ms before retry", sleepMs);
+                        try { Thread.sleep(sleepMs); } catch (InterruptedException ie) {
                             Thread.currentThread().interrupt();
                             throw e;
                         }
                     }
                 }
             }
+            log.error("[API-SOURCE] All {} attempts exhausted for {}", attempts, config.getUrl());
             throw (IOException) lastEx;
         }
 
