@@ -110,6 +110,19 @@ Before accepting agent output, verify:
 
 ## 5. Layer Contracts
 
+### Source type discriminator
+
+`SourceConfig.type` selects the source layer implementation at job-submit time.
+The orchestrator dispatches via `SourceLayer.getSourceType()` — a default method returning
+`"KAFKA"` so existing `KafkaSourceLayer` is backward-compatible without code changes.
+
+| `type` value | Implementation | Swim lane |
+|-------------|---------------|-----------|
+| `KAFKA` (default) | `KafkaSourceLayer` | Soft — event-driven |
+| `FILE` | `FileSourceLayer` | Hard — batch / streaming files |
+| `JDBC` | `JdbcSourceLayer` | Hard — structured DB read |
+| `API` | `ApiSourceLayer` | Soft — REST polling |
+
 ### Source Layer (`KafkaSourceLayer`)
 
 | Responsibility | Requirement |
@@ -120,6 +133,46 @@ Before accepting agent output, verify:
 | Table Registration | Register each source as a named Flink temporary view |
 | Watermark | Support `NONE`, `PROCESS_TIME`, and `EXISTING` column modes |
 
+### Source Layer (`FileSourceLayer`)
+
+| Responsibility | Requirement |
+|---|---|
+| Path resolution | Auto-detect URI scheme: local, `abfs://` (ADLS Gen2), `s3a://` (S3) via `StoragePathResolver` |
+| Credentials | Inject Hadoop FS credentials into Flink `Configuration` before building DDL |
+| Formats | Support `CSV`, `JSON`, `PARQUET` via Flink Table API `filesystem` connector DDL |
+| Watching | When `monitorInterval > 0`, register as continuous file-monitoring source |
+| Validation | `storagePath` non-blank; `fileFormat` in {CSV, JSON, PARQUET}; `tableName` non-blank |
+
+### Source Layer (`JdbcSourceLayer`)
+
+| Responsibility | Requirement |
+|---|---|
+| Query | Accept full SELECT SQL in `SourceConfig.query` |
+| Driver detection | Auto-detect JDBC driver class from URL prefix (PG / MySQL / Oracle / H2) |
+| DDL | Register via Flink Table API JDBC connector DDL (`connector = 'jdbc'`) |
+| SSL | Support `sslMode: require / verify-full` via URL parameter injection |
+| Validation | `jdbcUrl` non-blank; `query` non-blank; `tableName` non-blank |
+
+### Source Layer (`ApiSourceLayer`)
+
+| Responsibility | Requirement |
+|---|---|
+| Polling | Poll REST endpoint at `pollIntervalMs` interval via `RestPollingSourceFunction` |
+| At-least-once | Store last-polled epoch-ms in `ListState<Long>`; restore on checkpoint restart |
+| JSONPath | Extract record arrays from response body using Jayway JSONPath |
+| Auth | Support BEARER, OAUTH2 (auto-refresh via `OAuthTokenManager`), MTLS, API_KEY via `HttpClientFactory` |
+| Retry | Exponential backoff on 5xx; non-retryable 4xx routed to DLQ side output |
+| Validation | `url` valid URI; `apiAuth.type` set; OAUTH2 requires `tokenUrl` + `clientId` |
+
+### Auth infrastructure (shared by API source + sink)
+
+| Class | Responsibility |
+|-------|---------------|
+| `ApiAuthConfig` | POJO: `type` enum (BEARER/OAUTH2/MTLS/API_KEY) + all auth fields |
+| `OAuthTokenManager` | Client credentials flow; token cached; proactive refresh 60 s before expiry |
+| `HttpClientFactory` | Builds `CloseableHttpClient` 4.x; mTLS keystore + truststore wired into `SSLContext` |
+| `StoragePathResolver` | URI scheme detection for LOCAL/ADLS/S3; injects Hadoop FS properties |
+
 ### Transform Layer (`TransformationLayer`)
 
 | Responsibility | Requirement |
@@ -127,6 +180,18 @@ Before accepting agent output, verify:
 | SQL Execution | Execute user-supplied SQL via Flink Table API |
 | SQL Source | Accept inline SQL content or file path |
 | Result Registration | Register result as a named temporary view |
+
+### Sink type discriminator
+
+`TargetConfig.type` selects the sink layer implementation.
+The orchestrator dispatches via `TargetLayer.getSinkType()` (already on the interface).
+
+| `type` value | Implementation | Storage zone |
+|-------------|---------------|-------------|
+| `KAFKA` (default) | `KafkaTargetLayer` | Hot |
+| `JDBC` | `JdbcTargetLayer` | Warm |
+| `FILE` | `FileTargetLayer` | Cold |
+| `API` | `ApiTargetLayer` | Hot |
 
 ### Target Layer (`KafkaTargetLayer`)
 
@@ -136,6 +201,36 @@ Before accepting agent output, verify:
 | Serialization | Support STRING, JSON (proper object), and Avro binary formats |
 | Schema-Driven Avro | Map Row fields to Avro schema fields by name, not by position |
 | Authentication | Support SASL_SSL and SASL_PLAINTEXT with PLAIN and SCRAM-SHA-256 mechanisms |
+
+### Target Layer (`JdbcTargetLayer`)
+
+| Responsibility | Requirement |
+|---|---|
+| Write mode | INSERT (default) or upsert via `upsertMode: true` |
+| Upsert key | Resolved from `upsertKeyColumns` config; falls back to `schema.fields[].primaryKey: true` |
+| Dialect | PostgreSQL, MySQL, Oracle, H2 — auto-detected from JDBC URL; overridable via `jdbcDialect` |
+| DDL | Register via Flink Table API JDBC connector DDL |
+| Validation | `jdbcUrl` non-blank; `tableName` non-blank; upsert requires a resolved key |
+
+### Target Layer (`FileTargetLayer`)
+
+| Responsibility | Requirement |
+|---|---|
+| Path resolution | Same `StoragePathResolver` as `FileSourceLayer` (Local/ADLS/S3) |
+| Formats | Support `CSV`, `JSON`, `PARQUET` via filesystem DDL |
+| Rolling policy | Roll on checkpoint (`rollOnCheckpoint: true`) or by file size (`maxFileSizeBytes`) |
+| Partitioning | Optional partition column via `partitionBy` field |
+| Validation | `storagePath` non-blank; `fileFormat` in {CSV, JSON, PARQUET} |
+
+### Target Layer (`ApiTargetLayer`)
+
+| Responsibility | Requirement |
+|---|---|
+| HTTP POST | Serialise each Row as JSON; POST to configured URL |
+| Batching | Buffer rows up to `apiBatchSize` before flushing; single POST per batch |
+| Retry | Exponential backoff on 5xx; `NonRetryableException` on 4xx |
+| Auth | Same `ApiAuthConfig` / `HttpClientFactory` / `OAuthTokenManager` as API source |
+| Validation | `url` valid URI; OAUTH2 requires `tokenUrl` |
 
 ---
 

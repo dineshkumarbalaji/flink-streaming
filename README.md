@@ -1,6 +1,6 @@
 # DataHonDo Flink Streaming Service
 
-A low-code, dynamic real-time data streaming platform built on **Apache Flink** and **Spring Boot**. Define, deploy, and manage Kafka-to-Kafka streaming pipelines using SQL — no Java/Scala coding required.
+A low-code, dynamic real-time data streaming platform built on **Apache Flink** and **Spring Boot**. Define, deploy, and manage multi-source / multi-sink streaming pipelines using SQL — no Java/Scala coding required.
 
 ---
 
@@ -36,24 +36,28 @@ Open your browser and go to: **http://localhost:8082**
 
 ## Service URLs
 
-| Service              | URL                                      |
-|----------------------|------------------------------------------|
-| Flink Control App    | http://localhost:8082                    |
-| Flink Control API    | http://localhost:8082/api/jobs/list      |
-| Flink Dashboard      | http://localhost:8081                    |
-| Kafka UI             | http://localhost:8090                    |
-| Kafka Broker         | localhost:9092                           |
-| ZooKeeper            | localhost:2181                           |
+| Service              | URL                                      | Notes |
+|----------------------|------------------------------------------|-------|
+| Flink Control App    | http://localhost:8082                    | Job submit UI + REST API |
+| Flink Control API    | http://localhost:8082/api/jobs/list      | Running jobs |
+| Flink Dashboard      | http://localhost:8081                    | Operator graph, task metrics |
+| Kafka UI             | http://localhost:8090                    | Topic browser, consumer lag |
+| Grafana              | http://localhost:3000                    | Pipeline dashboards (admin/admin) |
+| Prometheus           | http://localhost:9090                    | Raw metrics query |
+| Kafka Broker         | localhost:9092                           | |
+| ZooKeeper            | localhost:2181                           | |
+| PostgreSQL           | localhost:5432                           | Audit / reconciliation tables |
 
 ---
 
 ## Using the Application
 
 1. **Open the UI** at `http://localhost:8082`
-2. **Configure Source** — enter your Kafka broker, topic, and message format (JSON / Avro / String)
+2. **Configure Source** — choose source type (`KAFKA`, `FILE`, `JDBC`, or `API`) and supply connection details
 3. **Write SQL** — filter or transform data (e.g. `SELECT * FROM source WHERE amount > 1000`)
-4. **Configure Target** — enter the output Kafka broker and topic
+4. **Configure Target** — choose sink type (`KAFKA`, `JDBC`, `FILE`, or `API`) and supply connection details
 5. **Deploy Job** — click "Deploy Job" and monitor progress on the Flink Dashboard
+6. **Monitor** — view real-time metrics in Grafana (`http://localhost:3000`)
 
 ---
 
@@ -71,20 +75,36 @@ Open your browser and go to: **http://localhost:8082**
 
 | Feature | Description |
 |---------|-------------|
-| Multi-source SQL | JOIN across multiple Kafka sources in a single SQL query |
-| Schema validation | JSON Schema and Avro schema validation at source ingestion |
-| Audit & Reconciliation | Per-run record counting with discrepancy reporting (LOG / KAFKA / JDBC sinks) |
-| Savepoint support | Trigger, list, and restore from savepoints without stopping the job |
-| Pre-flight validation | Kafka connectivity, topic existence, SQL syntax, and savepoint path — validated before submission |
-| Watermark support | `PROCESS_TIME` or event-time (`EXISTING` column) watermark strategies |
+| **Multi-source ingestion** | `KAFKA` (event streaming), `FILE` (CSV/JSON/Parquet, Local/ADLS Gen2/S3), `JDBC` (PostgreSQL/MySQL/Oracle), `API` (REST polling) |
+| **Multi-sink output** | `KAFKA` (hot), `JDBC` (warm — upsert-capable), `FILE` (cold — Parquet/checkpoint rolling), `API` (REST push with retry) |
+| **API authentication** | Bearer token, OAuth2 client credentials (auto token refresh), mTLS, API key (header or query param) |
+| **Schema Registry** | Fetch Avro schemas from SASL-secured Confluent Schema Registry (PLAIN/SCRAM); TTL cache; TLS truststore |
+| **Multi-source SQL** | JOIN across multiple sources (any type) in a single SQL query |
+| **Schema validation** | JSON Schema and Avro schema validation at source ingestion; DLQ side-output for rejected records |
+| **Audit & Reconciliation** | Per-run record counting with discrepancy reporting (LOG / KAFKA / JDBC sinks) |
+| **Savepoint support** | Trigger, list, and restore from savepoints without stopping the job |
+| **Pre-flight validation** | Source connectivity, topic/path existence, SQL syntax, savepoint path — validated before submission |
+| **Watermark support** | `PROCESS_TIME` or event-time (`EXISTING` column) watermark strategies |
+| **Monitoring** | Prometheus (30-day retention) + pre-built Grafana dashboard: throughput, latency, DLQ, checkpoint, errors |
+| **Job Audit Table** | Every submission persisted in `job_audit_records`; REST API + live Job History UI panel |
 
 ---
 
-## Kafka Authentication
+## Authentication
 
-Supports secured Kafka clusters via:
-- **SASL_PLAINTEXT** / **SASL_SSL**
-- Mechanisms: `PLAIN`, `SCRAM-SHA-256`
+### Kafka
+Supports secured Kafka clusters via **SASL_PLAINTEXT** / **SASL_SSL** with `PLAIN` and `SCRAM-SHA-256` mechanisms.
+
+### REST API (source & sink)
+| Mechanism | Config |
+|-----------|--------|
+| Bearer token | `apiAuth.type: BEARER`, `apiAuth.token` |
+| OAuth2 (auto-refresh) | `apiAuth.type: OAUTH2`, `tokenUrl`, `clientId`, `clientSecret` |
+| Mutual TLS | `apiAuth.type: MTLS`, `keystorePath`, `truststorePath` |
+| API key | `apiAuth.type: API_KEY`, `apiKey`, `apiKeyHeader`, `apiKeyLocation` (HEADER or QUERY) |
+
+### Schema Registry
+SASL-secured Confluent Schema Registry — `saslMechanism: PLAIN | SCRAM-SHA-256 | SCRAM-SHA-512` with optional TLS truststore.
 
 ---
 
@@ -110,8 +130,8 @@ flink-streaming/
 │   │   │   ├── exception/       # Custom exceptions
 │   │   │   ├── job/             # Job orchestration (StreamingJobOrchestrator)
 │   │   │   ├── savepoint/       # Savepoint trigger, registry, Flink REST client
-│   │   │   ├── source/          # Kafka source layer with schema validation
-│   │   │   ├── target/          # Kafka target/sink layer
+│   │   │   ├── source/          # Source layers: Kafka, File, JDBC, API + Schema Registry
+│   │   │   ├── sink/            # Sink layers: Kafka, JDBC, File, API
 │   │   │   ├── transformation/  # SQL transformation layer
 │   │   │   └── web/             # REST API controllers, validators & models
 │   │   └── resources/
@@ -120,9 +140,10 @@ flink-streaming/
 │   └── docs/
 │       ├── WORK_AGREEMENT.md    # Engineering standards and TDD workflow
 │       ├── FEATURE_COVERAGE_MATRIX.md
-│       ├── features/            # Per-feature functional docs (001–008)
+│       ├── features/            # Per-feature functional docs (001–012)
 │       └── technical/           # Technical design documents
-├── docker-compose.yml           # Full stack service definitions
+├── monitoring/                  # Prometheus config + Grafana provisioning + dashboards
+├── docker-compose.yml           # Full stack service definitions (incl. Prometheus + Grafana)
 ├── Dockerfile                   # flink-app container build
 ├── pom.xml                      # Maven build configuration
 ├── start_app.bat                # Start script (Windows)
@@ -138,7 +159,10 @@ flink-streaming/
 - **Spring Boot** 2.7.17
 - **Apache Kafka** (Confluent 7.5.0)
 - **Docker & Docker Compose**
-- **Jackson** (JSON), **Apache Avro**
+- **Jackson** (JSON), **Apache Avro**, **Confluent Schema Registry**
+- **Apache HttpClient** 4.5 (API source/sink, OAuth2, mTLS)
+- **Prometheus** v2.51 + **Grafana** 10.3 (Metrics & Observability)
+- **PostgreSQL** 15 (Audit, Reconciliation, Job Audit tables)
 - **Vanilla JS + HTML5** (Frontend)
 
 ---

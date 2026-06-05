@@ -231,6 +231,70 @@
 
 ---
 
+---
+
+## 13. Feature 009 — Multi-Source Architecture
+
+| Feature | Class | Status | Test |
+|---------|-------|--------|------|
+| `FileSourceLayer` — CSV/JSON/Parquet via Table API DDL | `source.FileSourceLayer` | ✅ | `FileSourceLayerTest#createSourceTable_throwsIllegalArgument_*` |
+| `StoragePathResolver` — LOCAL / ADLS / S3 URI detection | `source.StoragePathResolver` | ✅ | `StoragePathResolverTest#detect_*`, `normalise_*` |
+| `JdbcSourceLayer` — JDBC Table API DDL, driver auto-detect | `source.JdbcSourceLayer` | ✅ | `JdbcSourceLayerTest#createSourceTable_*` |
+| `ApiSourceLayer` — REST polling with at-least-once checkpoint | `source.ApiSourceLayer` | ✅ | `ApiSourceLayerTest#createSourceTable_*` |
+| `RestPollingSourceFunction` — CheckpointedFunction, poll loop | `source.ApiSourceLayer` (inner) | ✅ | Covered by `ApiSourceLayerTest` |
+| `ApiAuthConfig` — BEARER / OAUTH2 / MTLS / API_KEY discriminator | `config.ApiAuthConfig` | ✅ | Used by `ApiSourceLayerTest#*_oauth2*`, `*_mtls*` |
+| `OAuthTokenManager` — client credentials token refresh | `source.OAuthTokenManager` | ✅ | `OAuthTokenManagerTest#*` |
+| `HttpClientFactory` — mTLS SSLContext builder (Java 8) | `source.HttpClientFactory` | 🔶 | Covered by mTLS auth path in `ApiSourceLayerTest` |
+| `StorageConfig` — ADLS account key / service principal / S3 | `config.StorageConfig` | 🔶 | Covered by `StoragePathResolverTest` credential paths |
+| `SourceConfig.type` discriminator field | `config.SourceConfig` | ✅ | `ApiSourceLayerTest`, `FileSourceLayerTest`, `JdbcSourceLayerTest` |
+| Orchestrator dispatch `List<SourceLayer>` by `getSourceType()` | `job.StreamingJobOrchestrator` | ✅ | `StreamingJobOrchestratorAuditTest` (constructor uses list) |
+| `SourceLayer.getSourceType()` default method (KAFKA backward compat) | `source.SourceLayer` | ✅ | All `getSourceType` tests in layer tests |
+
+---
+
+## 14. Feature 010 — Multi-Sink Architecture
+
+| Feature | Class | Status | Test |
+|---------|-------|--------|------|
+| `JdbcTargetLayer` — INSERT / upsert via Table API JDBC DDL | `sink.JdbcTargetLayer` | ✅ | `JdbcTargetLayerTest#sink_*` |
+| `JdbcDialect` — PG/MySQL/Oracle/H2 upsert SQL generation | `sink.JdbcDialect` | ✅ | `JdbcDialectTest#*` |
+| Upsert key resolution: config → schema `primaryKey` fallback | `sink.JdbcTargetLayer` | ✅ | `JdbcTargetLayerTest#sink_prefersConfigKeys_*`, `sink_throwsIllegalArgument_whenUpsertEnabledButNoKeyResolved` |
+| `FileTargetLayer` — CSV/JSON/Parquet via Table API filesystem DDL | `sink.FileTargetLayer` | ✅ | `FileTargetLayerTest#sink_*` |
+| `FileTargetLayer` ADLS/S3 via shared `StoragePathResolver` | `sink.FileTargetLayer` | 🔶 | Covered by `StoragePathResolverTest` |
+| `ApiTargetLayer` — POST rows as JSON with retry | `sink.ApiTargetLayer` | ✅ | `ApiTargetLayerTest#sink_*` |
+| `HttpRowSinkFunction` — batching, exponential backoff, auth | `sink.ApiTargetLayer` (inner) | ✅ | Covered by `ApiTargetLayerTest` |
+| Orchestrator dispatch `List<TargetLayer>` by `getSinkType()` | `job.StreamingJobOrchestrator` | ✅ | `StreamingJobOrchestratorAuditTest` |
+| `TargetConfig.type` discriminator + new JDBC/FILE/API fields | `config.TargetConfig` | ✅ | `JdbcTargetLayerTest`, `FileTargetLayerTest`, `ApiTargetLayerTest` |
+
+---
+
+## 15. Feature 011 — Schema Registry Integration
+
+| Feature | Class | Status | Test |
+|---------|-------|--------|------|
+| `SchemaRegistryClient` — HTTP client, SASL Basic auth, TLS truststore | `source.SchemaRegistryClient` | ✅ | `CachedSchemaRegistryClientTest#getSchema_throwsIoException_*` |
+| `CachedSchemaRegistryClient` — TTL cache, 404 invalidation | `source.CachedSchemaRegistryClient` | ✅ | `CachedSchemaRegistryClientTest#*` |
+| `SchemaConfig.RegistryTlsConfig` — truststore, skipHostnameVerification | `config.SchemaConfig` (inner) | 🔶 | Config parsing; TLS path covered by `SchemaRegistryClient` |
+| `SchemaConfig.SchemaField` — name, type, nullable, primaryKey | `config.SchemaConfig` (inner) | ✅ | Used in `JdbcTargetLayerTest#sink_prefersConfigKeys_overSchemaKeys` |
+| `SchemaConfig` SASL fields: saslMechanism, registryUsername, registryPassword | `config.SchemaConfig` | 🔶 | Config parsing |
+| Cache invalidation via `invalidate(subject)` | `source.CachedSchemaRegistryClient` | ✅ | `CachedSchemaRegistryClientTest#invalidate_doesNotThrow_*` |
+
+---
+
+## 16. Feature 012 — Prometheus / Grafana Monitoring
+
+| Feature | Component | Status | Notes |
+|---------|-----------|--------|-------|
+| `flink-metrics-prometheus` dependency | `pom.xml` | ✅ | `PrometheusReporterFactory` available on classpath |
+| `PrometheusReporterFactory` wired in `FLINK_PROPERTIES` | `docker-compose.yml` | ✅ | Port 9249 for JM + TM |
+| Prometheus service — 30-day retention, 15 s scrape | `docker-compose.yml` + `monitoring/prometheus.yml` | ✅ | Port 9090 |
+| Grafana service — auto-provisioned datasource + dashboard | `docker-compose.yml` + `monitoring/grafana/` | ✅ | Port 3000 |
+| Pre-built 8-panel dashboard JSON | `monitoring/grafana/dashboards/flink-pipeline.json` | ✅ | Records in/out, rejections, DLQ, sink failures, latency, checkpoints, running jobs |
+| Named volumes for persistent metric storage | `docker-compose.yml` | ✅ | `prometheus_data`, `grafana_data` |
+| Custom metric name constants (reserved for future wiring) | Design only | 🚧 | `flink_pipeline_source_records_read_total`, `_rejected_total`, `_sink_*` |
+
+---
+
 ## Summary
 
 | Category | Total Features | ✅ Unit-tested | 🧪 Integration-tested | 🔶 Implicit | 🚧 Stub |
@@ -246,4 +310,8 @@
 | Feature 007 — Validation & Error Hardening | 12 | 12 | 0 | 0 | 0 |
 | Feature 008 — Job Audit Table & Dashboard | 10 | 8 | 0 | 2 | 0 |
 | Feature 008 (cont.) — DLQ / RocksDB / Savepoint Persistence | 7 | 7 | 0 | 0 | 0 |
-| **Total** | **119** | **96 (81%)** | **6 (5%)** | **17 (14%)** | **0 (0%)** |
+| Feature 009 — Multi-Source Architecture | 12 | 9 | 0 | 3 | 0 |
+| Feature 010 — Multi-Sink Architecture | 9 | 7 | 0 | 2 | 0 |
+| Feature 011 — Schema Registry Integration | 6 | 3 | 0 | 3 | 0 |
+| Feature 012 — Prometheus / Grafana Monitoring | 7 | 6 | 0 | 0 | 1 |
+| **Total** | **153** | **121 (79%)** | **6 (4%)** | **23 (15%)** | **1 (1%)** |

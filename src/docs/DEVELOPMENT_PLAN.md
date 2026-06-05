@@ -2,7 +2,11 @@
 
 **Reference:** `flink_streaming_framework_architecture.svg`
 **Date:** 2026-06-05
-**Status:** Approved for Development
+**Status:** ✅ Implemented — 2026-06-05 (branch: `feature/009-012-roadmap`)
+
+> All Features 009-012 implemented, compiled, and pushed to both remotes.
+> `mvn clean test-compile` → BUILD SUCCESS (58 main + 33 test sources, 153 features tracked).
+> See [FEATURE_COVERAGE_MATRIX.md](FEATURE_COVERAGE_MATRIX.md) for full test coverage breakdown.
 
 ---
 
@@ -39,16 +43,16 @@
 
 ## Roadmap
 
-| Feature | Scope | Priority | Sprint |
-|---------|-------|----------|--------|
-| **009-A** | File source — Local / ADLS Gen2 / S3 | HIGH | 1 |
-| **010-A** | JDBC sink — Warm zone (upsert support) | HIGH | 1 |
-| **009-B** | JDBC source — PostgreSQL / MySQL / Oracle | HIGH | 2 |
-| **010-B** | File sink — CSV / JSON / Parquet + storage tiers | HIGH | 2 |
-| **009-C** | API source — Bearer / OAuth2 / mTLS / API-key | MEDIUM | 3 |
-| **010-C** | API sink — REST push with retry + DLQ | MEDIUM | 3 |
-| **011** | Schema Registry — SASL-secured Confluent | MEDIUM | 4 |
-| **012** | Metrics — Prometheus / Grafana / 30-day retention | MEDIUM | 5 |
+| Feature | Scope | Priority | Sprint | Status |
+|---------|-------|----------|--------|--------|
+| **009-A** | File source — Local / ADLS Gen2 / S3 | HIGH | 1 | ✅ Done |
+| **010-A** | JDBC sink — Warm zone (upsert support) | HIGH | 1 | ✅ Done |
+| **009-B** | JDBC source — PostgreSQL / MySQL / Oracle | HIGH | 2 | ✅ Done |
+| **010-B** | File sink — CSV / JSON / Parquet + storage tiers | HIGH | 2 | ✅ Done |
+| **009-C** | API source — Bearer / OAuth2 / mTLS / API-key | MEDIUM | 3 | ✅ Done |
+| **010-C** | API sink — REST push with retry + DLQ | MEDIUM | 3 | ✅ Done |
+| **011** | Schema Registry — SASL-secured Confluent | MEDIUM | 4 | ✅ Done |
+| **012** | Metrics — Prometheus / Grafana / 30-day retention | MEDIUM | 5 | ✅ Done |
 
 ---
 
