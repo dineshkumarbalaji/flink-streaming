@@ -2,13 +2,23 @@
 
 **Reference:** `flink_streaming_framework_architecture.svg`
 **Date:** 2026-06-05
-**Status:** Planning
+**Status:** Approved for Development
+
+---
+
+## Resolved Design Decisions
+
+| Question | Decision |
+|----------|----------|
+| File storage target | **All** — Local filesystem, Azure ADLS Gen2, and AWS S3 |
+| JDBC sink upsert key | **Both** — config-provided `upsertKeyColumns` with fallback to `schema.fields[].primaryKey: true` |
+| API source/sink auth | **All** — Bearer token, OAuth2 client credentials, mTLS, and API key header |
+| Schema Registry auth | **SASL-secured** — PLAIN / SCRAM-SHA-256 / SCRAM-SHA-512 + optional TLS |
+| Prometheus retention | **Yes** — 30-day retention, 15s scrape interval, Grafana dashboards provisioned |
 
 ---
 
 ## Architecture Gap Analysis
-
-The architecture diagram defines five capability pillars. The table below maps each pillar to its current implementation state.
 
 | Pillar | Diagram shows | Implemented | Gap |
 |--------|--------------|-------------|-----|
@@ -18,7 +28,7 @@ The architecture diagram defines five capability pillars. The table below maps e
 | **Common data model** | Flink Table API, unified schema | TransformationLayer ✅ | — |
 | **SQL/HQL transform** | .hql/.sql files, Table API exec | TransformationLayer ✅ | — |
 | **Hot sink** | Kafka · API sink | Kafka ✅ | API/REST sink ❌ |
-| **Warm sink** | JDBC · DB sink | Audit/recon only | Pipeline JDBC sink ❌ |
+| **Warm sink** | JDBC · DB sink | Audit/recon JDBC only | Pipeline JDBC sink ❌ |
 | **Cold sink** | Iceberg · File sink | — | Both missing ❌ |
 | **Audit** | Job start/end, read/write counts | AuditService ✅ | — |
 | **Reconciliation** | Src/target count, mismatch | ReconciliationService ✅ | — |
@@ -29,116 +39,179 @@ The architecture diagram defines five capability pillars. The table below maps e
 
 ## Roadmap
 
-### Feature 009 — Additional Source Layers
-**Priority: HIGH** | Unblocks hard data layer and JDBC/file pipelines
-
-### Feature 010 — Additional Sink Layers (Warm + Cold zones)
-**Priority: HIGH** | Completes the data storage sandbox
-
-### Feature 011 — Schema Registry Integration
-**Priority: MEDIUM** | Required for enterprise Avro pipelines
-
-### Feature 012 — Metrics & Observability
-**Priority: MEDIUM** | Throughput/latency/error visibility beyond accumulators
+| Feature | Scope | Priority | Sprint |
+|---------|-------|----------|--------|
+| **009-A** | File source — Local / ADLS Gen2 / S3 | HIGH | 1 |
+| **010-A** | JDBC sink — Warm zone (upsert support) | HIGH | 1 |
+| **009-B** | JDBC source — PostgreSQL / MySQL / Oracle | HIGH | 2 |
+| **010-B** | File sink — CSV / JSON / Parquet + storage tiers | HIGH | 2 |
+| **009-C** | API source — Bearer / OAuth2 / mTLS / API-key | MEDIUM | 3 |
+| **010-C** | API sink — REST push with retry + DLQ | MEDIUM | 3 |
+| **011** | Schema Registry — SASL-secured Confluent | MEDIUM | 4 |
+| **012** | Metrics — Prometheus / Grafana / 30-day retention | MEDIUM | 5 |
 
 ---
 
-## Feature 009 — Additional Source Layers
+## Feature 009-A — File / Batch Source (`FileSourceLayer`)
 
-### 009-A: File / Batch Source (`FileSourceLayer`)
+### What
 
-**What:** Read CSV / JSON / Parquet files from a local or ADLS/S3 path.
-Registers a Flink `FileSource` (1.14+ API) as a Flink Table view —
-identical interface to `KafkaSourceLayer` so the orchestrator needs no changes.
+Read CSV / JSON / Parquet files from **local filesystem, Azure ADLS Gen2, or AWS S3**.
+Registers a Flink `FileSource` view — same `SourceLayer` interface as `KafkaSourceLayer`.
 
-**Classes to create:**
+### Storage URI scheme detection
+
+| Prefix | Backend | Auth |
+|--------|---------|------|
+| `file:///` or bare path | Local filesystem | None |
+| `abfs://<container>@<account>.dfs.core.windows.net/` | ADLS Gen2 | Storage account key OR service principal |
+| `s3://<bucket>/` or `s3a://<bucket>/` | AWS S3 | Access key + secret OR IAM role |
+
+### Classes to create
 
 | Class | Package | Role |
 |-------|---------|------|
-| `FileSourceLayer` | `source` | Implements `SourceLayer`; reads via `FileSystem.get()` |
-| `FileSourceConfig` fields | `config.SourceConfig` | `filePath`, `fileFormat` (CSV/JSON/PARQUET), `recursive` |
-| `FileSourceLayerTest` | `source` (test) | Schema validation, field mapping, missing-file error |
+| `FileSourceLayer` | `source` | Implements `SourceLayer`; delegates to Flink `FileSource` |
+| `StoragePathResolver` | `source` | Detects URI scheme, configures `FileSystem` credentials |
+| `FileSourceLayerTest` | `source` (test) | Local file happy path, missing file, schema mismatch |
+| `StoragePathResolverTest` | `source` (test) | URI scheme detection for all 3 backends |
 
-**Config YAML shape:**
+### `SourceConfig` additions
+
 ```yaml
 streaming.job.sources[0]:
-  type: FILE
+  type: FILE                          # KAFKA | FILE | JDBC | API
   tableName: orders
-  filePath: /app/data/orders.csv
-  fileFormat: CSV       # CSV | JSON | PARQUET
+  fileFormat: CSV                     # CSV | JSON | PARQUET
+  storagePath: abfs://raw@myaccount.dfs.core.windows.net/orders/2026/
+  recursive: true                     # scan subdirectories
+  monitorInterval: 0                  # 0 = one-shot batch; >0 = continuous watching (ms)
+  storage:
+    adls:
+      accountName: ${ADLS_ACCOUNT}
+      accountKey: ${ADLS_KEY}         # OR use servicePrincipal below
+      servicePrincipal:
+        tenantId: ${AZURE_TENANT_ID}
+        clientId: ${AZURE_CLIENT_ID}
+        clientSecret: ${AZURE_CLIENT_SECRET}
+    s3:
+      accessKey: ${AWS_ACCESS_KEY}
+      secretKey: ${AWS_SECRET_KEY}
+      region: ${AWS_REGION:eu-west-1}
+      endpoint: ${S3_ENDPOINT:}       # empty = AWS; set for MinIO / compatible
   schema:
     fields:
       - { name: id,    type: INT }
       - { name: name,  type: STRING }
 ```
 
-**Key implementation points:**
-- `SourceConfig.type` discriminator: `KAFKA` (existing) | `FILE` | `JDBC` | `API`
-- Register as `StreamTableEnvironment.createTemporaryView(tableName, ...)`
-- Schema-driven column projection via `RowTypeInfo` (same as `KafkaSourceLayer`)
-- DLQ side-output applies: malformed rows → `DLQ_TAG`
+### Key implementation points
 
-**Acceptance tests:**
-- `createSourceTable_registersView_forCsvFile`
+- `StoragePathResolver.configure(env, storagePath, storageConfig)` calls
+  `env.getConfiguration().set(...)` to inject Hadoop-compatible FS credentials
+  before `FileSource` is built (ADLS: `fs.azure.account.key.*`, S3: `fs.s3a.access.key`)
+- CSV via `CsvReaderFormat.forPojo(...)` or `TextLineInputFormat` + schema mapping
+- JSON via `JsonRowDeserializationSchema`
+- Parquet via `ParquetColumnarRowInputFormat`
+- `monitorInterval > 0` → `FileSource.forRecordStreamFormat(...).monitorContinuously(...)`
+- DLQ side-output on malformed rows (same `DLQ_TAG` as Kafka path)
+
+### Acceptance tests
+
+- `createSourceTable_registersView_forLocalCsvFile`
+- `createSourceTable_registersView_forAdlsPath_withAccountKey`
+- `createSourceTable_registersView_forS3Path`
+- `createSourceTable_throwsIllegalArgument_whenStoragePathIsNull`
 - `createSourceTable_throwsSchemaException_whenRequiredFieldMissing`
-- `createSourceTable_throwsIllegalArgument_whenFilePathIsNull`
+- `storagePathResolver_detectsAdlsScheme`
+- `storagePathResolver_detectsS3Scheme`
+- `storagePathResolver_detectsLocalScheme`
 
 ---
 
-### 009-B: JDBC / DB Source (`JdbcSourceLayer`)
+## Feature 009-B — JDBC Source (`JdbcSourceLayer`)
 
-**What:** Read from any JDBC datasource (PostgreSQL, MySQL, Oracle).
-Uses Flink's `JdbcInputFormat` wrapped in a `fromDataStream()` → Table view.
+### What
 
-**Classes to create:**
+Read from any JDBC datasource (PostgreSQL, MySQL, Oracle) into a Flink Table view.
+Uses `JdbcInputFormat` wrapped in `fromDataSource()` → `createTemporaryView()`.
+
+### Classes to create
 
 | Class | Package | Role |
 |-------|---------|------|
 | `JdbcSourceLayer` | `source` | Implements `SourceLayer`; `JdbcInputFormat` builder |
-| `JdbcSourceConfig` fields | `config.SourceConfig` | `jdbcUrl`, `query`, `fetchSize`, `authConfig` |
-| `JdbcSourceLayerTest` | `source` (test) | Mock JDBC connection, field mapping |
+| `JdbcRowTypeMapper` | `source` | Maps `ResultSetMetaData` → `RowTypeInfo`, cross-validates with schema config |
+| `JdbcSourceLayerTest` | `source` (test) | Mock JDBC, field mapping, partition query |
 
-**Config YAML shape:**
+### `SourceConfig` additions
+
 ```yaml
 streaming.job.sources[0]:
   type: JDBC
   tableName: customers
-  jdbcUrl: jdbc:postgresql://host:5432/db
+  jdbcUrl: jdbc:postgresql://host:5432/mydb
   query: "SELECT id, name, email FROM customers WHERE active = true"
   fetchSize: 1000
+  numPartitions: 4                    # parallel read partitions
+  partitionColumn: id                 # used with lowerBound/upperBound
+  lowerBound: 1
+  upperBound: 1000000
   auth:
     username: ${DB_USERNAME}
     password: ${DB_PASSWORD}
+    sslMode: require                  # disable | require | verify-full
+    sslCertPath: ${DB_SSL_CERT_PATH:}
 ```
 
-**Key implementation points:**
-- Uses `flink-connector-jdbc` (already in pom.xml transitive — confirm)
-- `fetchSize` controls parallelism-aware partitioned reads
-- Schema inferred from `ResultSetMetaData` then cross-validated against `SourceConfig.schema`
+### Key implementation points
 
-**Acceptance tests:**
+- Driver class auto-detected from URL prefix (`jdbc:postgresql:` → `org.postgresql.Driver`, etc.)
+- Partitioned reads: when `numPartitions > 1`, generates `WHERE id >= X AND id < Y` sub-queries
+- Schema cross-validation: `ResultSetMetaData` column names/types validated against `schema.fields`
+- SSL: `sslMode=require` sets `ssl=true` on the connection properties
+
+### Acceptance tests
+
 - `createSourceTable_registersView_forJdbcQuery`
+- `createSourceTable_partitionsQuery_whenNumPartitionsConfigured`
 - `createSourceTable_throwsIllegalArgument_whenJdbcUrlIsNull`
 - `createSourceTable_throwsIllegalArgument_whenQueryIsNull`
+- `jdbcRowTypeMapper_mapsPostgresTypes_correctly`
+- `jdbcRowTypeMapper_throwsSchemaException_whenColumnMissing`
 
 ---
 
-### 009-C: API / Webhook Source (`ApiSourceLayer`)
+## Feature 009-C — API / Webhook Source (`ApiSourceLayer`)
 
-**What:** Poll a REST endpoint on a configurable interval and feed responses
-into the Flink stream. Implemented as a `SourceFunction` (or `Source` with
-`CheckpointedFunction` for at-least-once).
+### What
 
-**Classes to create:**
+Poll a REST endpoint on a configurable interval. Supports four auth mechanisms.
+Implemented as `RichSourceFunction<String>` with checkpoint-backed cursor for at-least-once.
+
+### Auth model
+
+| Type | Config fields | Mechanism |
+|------|--------------|-----------|
+| `BEARER` | `token` | Static `Authorization: Bearer <token>` header |
+| `OAUTH2` | `tokenUrl`, `clientId`, `clientSecret`, `scope` | Client credentials flow; token refreshed before expiry |
+| `MTLS` | `keystorePath`, `keystorePassword`, `truststorePath`, `truststorePassword` | Client certificate presented on TLS handshake |
+| `API_KEY` | `apiKey`, `apiKeyHeader` (default: `X-Api-Key`), `apiKeyLocation` (`HEADER`\|`QUERY`) | API key in header or query parameter |
+
+### Classes to create
 
 | Class | Package | Role |
 |-------|---------|------|
-| `ApiSourceLayer` | `source` | Implements `SourceLayer` |
-| `RestPollingSourceFunction` | `source` | `RichSourceFunction<String>` with polling loop |
-| `ApiSourceConfig` fields | `config.SourceConfig` | `url`, `method`, `headers`, `pollIntervalMs`, `jsonPath` |
-| `ApiSourceLayerTest` | `source` (test) | Mock HTTP, rate limit, JSON extraction |
+| `ApiSourceLayer` | `source` | Implements `SourceLayer`; wires `RestPollingSourceFunction` |
+| `RestPollingSourceFunction` | `source` | `RichSourceFunction<String>` with polling loop + checkpoint state |
+| `ApiAuthConfig` | `config` | Auth type enum + all auth fields; used by source AND sink |
+| `OAuthTokenManager` | `source` | Client credentials flow; caches token, refreshes 60 s before expiry |
+| `HttpClientFactory` | `source` | Builds `HttpClient` (Apache HttpClient 4.x for Java 8); wires mTLS keystore |
+| `ApiSourceLayerTest` | `source` (test) | Mock HTTP server, each auth type, DLQ on 4xx |
+| `OAuthTokenManagerTest` | `source` (test) | Token fetch, refresh on expiry, retry on failure |
 
-**Config YAML shape:**
+### `SourceConfig` additions
+
 ```yaml
 streaming.job.sources[0]:
   type: API
@@ -146,257 +219,473 @@ streaming.job.sources[0]:
   url: https://api.example.com/prices
   method: GET
   pollIntervalMs: 5000
-  jsonPath: $.data[*]     # JSONPath to extract records array
-  headers:
-    Authorization: Bearer ${API_TOKEN}
+  jsonPath: $.data[*]               # JSONPath to extract records array; omit for root array
+  connectTimeoutMs: 5000
+  readTimeoutMs: 10000
+  retryAttempts: 3
+  retryBackoffMs: 500
+  apiAuth:
+    type: OAUTH2                    # BEARER | OAUTH2 | MTLS | API_KEY
+    # BEARER
+    token: ${API_BEARER_TOKEN:}
+    # OAUTH2
+    tokenUrl: https://auth.example.com/oauth/token
+    clientId: ${OAUTH_CLIENT_ID:}
+    clientSecret: ${OAUTH_CLIENT_SECRET:}
+    scope: read:prices
+    # MTLS
+    keystorePath: /app/certs/client.p12
+    keystorePassword: ${MTLS_KEYSTORE_PASSWORD:}
+    truststorePath: /app/certs/truststore.jks
+    truststorePassword: ${MTLS_TRUSTSTORE_PASSWORD:}
+    # API_KEY
+    apiKey: ${API_KEY:}
+    apiKeyHeader: X-Api-Key         # header name
+    apiKeyLocation: HEADER          # HEADER | QUERY
 ```
 
-**Key implementation points:**
-- Uses `java.net.http.HttpClient` (Java 11+) — note: project targets Java 8,
-  so use `java.net.HttpURLConnection` or Apache HttpClient
-- `jsonPath` extraction with JsonPath library (add to pom.xml)
-- At-least-once: checkpoint saves last-polled cursor/timestamp
-- DLQ for HTTP errors (4xx/5xx) → `DLQ_TAG`
+### Key implementation points
 
-**Acceptance tests:**
-- `createSourceTable_registersView_afterSuccessfulPoll`
+- Uses **Apache HttpClient 4.x** (`httpclient:4.5.x`) — Java 8 compatible
+- `OAuthTokenManager` stores access token + expiry in a `volatile` field; refreshes
+  proactively 60 s before expiry using a single-threaded scheduler
+- mTLS: `SSLContext` loaded from keystore/truststore via `KeyManagerFactory` +
+  `TrustManagerFactory`; wired into `HttpClient` via `SSLConnectionSocketFactory`
+- Checkpoint state: `ListState<Long>` stores last successfully polled cursor
+  (epoch-ms or offset); restored on restart for at-least-once
+- DLQ: HTTP 4xx (non-retryable) → `DLQ_TAG`; HTTP 5xx → retry up to `retryAttempts`
+
+### Acceptance tests
+
+- `createSourceTable_registersView_withBearerAuth`
+- `createSourceTable_registersView_withOauth2Auth`
+- `createSourceTable_registersView_withMtlsAuth`
+- `createSourceTable_registersView_withApiKeyHeader`
+- `createSourceTable_registersView_withApiKeyQueryParam`
 - `createSourceTable_routesToDlq_on4xxResponse`
-- `createSourceTable_retries_onTransientError`
+- `createSourceTable_retries_on5xxResponse_upToMaxAttempts`
+- `oauthTokenManager_refreshesToken_beforeExpiry`
+- `oauthTokenManager_retries_onTokenFetchFailure`
 
 ---
 
-### 009 — Orchestrator changes
+## Feature 009 — Orchestrator changes
 
-`StreamingJobOrchestrator.buildSourceLayer()` currently hardcodes `KafkaSourceLayer`.
-Replace with a dispatcher:
+`StreamingJobOrchestrator` currently hardcodes `KafkaSourceLayer`.
+Replace with a Spring-injected dispatcher:
 
 ```java
+// Injected via @Autowired List<SourceLayer> — Spring discovers all SourceLayer beans
+private final Map<String, SourceLayer> sourceLayers;
+
+@Autowired
+public StreamingJobOrchestrator(List<SourceLayer> sourceLayers, ...) {
+    this.sourceLayers = sourceLayers.stream()
+        .collect(Collectors.toMap(s -> s.getSourceType().toUpperCase(), s -> s));
+}
+
 SourceLayer resolveSourceLayer(SourceConfig config) {
-    switch (config.getType().toUpperCase()) {
-        case "FILE":  return fileSourceLayer;
-        case "JDBC":  return jdbcSourceLayer;
-        case "API":   return apiSourceLayer;
-        default:      return kafkaSourceLayer;   // existing
-    }
+    String type = config.getType() == null ? "KAFKA" : config.getType().toUpperCase();
+    SourceLayer layer = sourceLayers.get(type);
+    if (layer == null) throw new IllegalArgumentException("No SourceLayer for type: " + type);
+    return layer;
 }
 ```
 
-All `SourceLayer` beans injected via Spring `@Autowired` list or explicit fields.
+`SourceLayer` interface gains default method `getSourceType()` returning `"KAFKA"`
+(overridden by `FileSourceLayer` → `"FILE"`, etc.) for backward compatibility.
+
+`JobController.validateJob()` extended to validate per source type:
+- `FILE`: `storagePath` not blank, `fileFormat` in allowed set
+- `JDBC`: `jdbcUrl` not blank, `query` not blank
+- `API`: `url` valid URI, `apiAuth.type` set, required auth fields present
 
 ---
 
-## Feature 010 — Additional Sink Layers
+## Feature 010-A — JDBC Sink (`JdbcTargetLayer`) — Warm zone
 
-### 010-A: JDBC Sink (`JdbcTargetLayer`) — Warm zone
+### What
 
-**What:** Write the result `Table` to any JDBC datasource.
+Write the result `Table` to any JDBC datasource with INSERT or upsert semantics.
 Uses Flink's `JdbcSink.sink()` connector.
 
-**Classes to create:**
+### Upsert key resolution
+
+Priority order:
+1. `target.upsertKeyColumns: [id, tenant_id]` — explicit config list
+2. `schema.fields` where `primaryKey: true` — schema-derived
+3. No upsert key → plain `INSERT` (no conflict handling)
+
+### Classes to create
 
 | Class | Package | Role |
 |-------|---------|------|
 | `JdbcTargetLayer` | `sink` | Implements `TargetLayer`; `getSinkType()` → `"JDBC"` |
-| `JdbcTargetLayerTest` | `sink` (test) | Mock JDBC, upsert mode, batch size |
+| `JdbcUpsertStatementBuilder` | `sink` | Builds `INSERT … ON CONFLICT (pk) DO UPDATE SET …` per dialect |
+| `JdbcInsertStatementBuilder` | `sink` | Builds plain `INSERT INTO … VALUES (…)` |
+| `JdbcDialect` | `sink` | Enum: POSTGRESQL, MYSQL, ORACLE — dialect-specific upsert SQL |
+| `JdbcTargetLayerTest` | `sink` (test) | Plain INSERT, upsert-by-config, upsert-by-schema, null PK |
 
-**Config YAML shape:**
+### `TargetConfig` additions
+
 ```yaml
 streaming.job.target:
   type: JDBC
   tableName: output_orders
-  jdbcUrl: jdbc:postgresql://host:5432/db
+  jdbcUrl: jdbc:postgresql://host:5432/mydb
   batchSize: 500
   batchIntervalMs: 1000
-  upsertMode: false       # true = INSERT … ON CONFLICT DO UPDATE
+  upsertMode: true
+  upsertKeyColumns: [id, tenant_id]  # optional; falls back to schema primaryKey fields
   auth:
     username: ${DB_USERNAME}
     password: ${DB_PASSWORD}
+    sslMode: require
+  schema:
+    fields:
+      - { name: id,        type: INT,    primaryKey: true }
+      - { name: tenant_id, type: STRING, primaryKey: true }
+      - { name: amount,    type: DOUBLE }
 ```
 
-**Key implementation points:**
-- `JdbcSink.sink(...)` from `flink-connector-jdbc`
-- Schema-aware `JdbcStatementBuilder<Row>` — derives INSERT from `TargetConfig.schema.fields`
-- Upsert mode: `INSERT … ON CONFLICT (pk) DO UPDATE SET …` (PostgreSQL dialect)
-- Audit: `TARGET_WRITTEN` accumulator incremented in `JdbcRowStatementBuilder`
+### Dialect-specific upsert SQL
 
-**Acceptance tests:**
+| Dialect | Upsert template |
+|---------|----------------|
+| PostgreSQL | `INSERT INTO t (…) VALUES (…) ON CONFLICT (pk) DO UPDATE SET col=EXCLUDED.col` |
+| MySQL | `INSERT INTO t (…) VALUES (…) ON DUPLICATE KEY UPDATE col=VALUES(col)` |
+| Oracle | `MERGE INTO t USING dual ON (pk=?) WHEN MATCHED THEN UPDATE … WHEN NOT MATCHED THEN INSERT …` |
+
+### Acceptance tests
+
 - `sink_buildsInsertStatement_fromSchemaFields`
+- `sink_buildsUpsertStatement_fromConfigKeyColumns`
+- `sink_buildsUpsertStatement_fromSchemaKeyFields`
+- `sink_prefersConfigKeys_overSchemaKeys_whenBothPresent`
 - `sink_throwsIllegalArgument_whenJdbcUrlIsNull`
-- `sink_throwsIllegalArgument_whenTableNameIsNull`
-- `sink_buildUpsertStatement_whenUpsertModeEnabled`
+- `sink_throwsIllegalArgument_whenUpsertEnabledButNoKeyResolved`
+- `sink_postgresDialect_generatesCorrectUpsertSql`
+- `sink_mysqlDialect_generatesCorrectUpsertSql`
 
 ---
 
-### 010-B: File / CSV Sink (`FileTargetLayer`) — Cold zone
+## Feature 010-B — File Sink (`FileTargetLayer`) — Cold zone
 
-**What:** Write the result `Table` to the filesystem (local or ADLS/S3/GCS).
-Uses Flink's `FileSink` API with rolling policy.
+### What
 
-**Classes to create:**
+Write the result `Table` to local filesystem, ADLS Gen2, or S3 in CSV, JSON, or Parquet.
+Uses Flink's `FileSink` with checkpoint-based rolling policy.
+
+### Classes to create
 
 | Class | Package | Role |
 |-------|---------|------|
 | `FileTargetLayer` | `sink` | Implements `TargetLayer`; `getSinkType()` → `"FILE"` |
-| `FileTargetLayerTest` | `sink` (test) | Rolling policy, format selection |
+| `FileTargetLayerTest` | `sink` (test) | CSV write, Parquet write, rolling on checkpoint, ADLS path |
 
-**Config YAML shape:**
+### `TargetConfig` additions
+
 ```yaml
 streaming.job.target:
   type: FILE
-  outputPath: /app/output/orders
-  fileFormat: CSV         # CSV | JSON | PARQUET
+  fileFormat: PARQUET              # CSV | JSON | PARQUET
+  storagePath: s3a://my-bucket/output/orders
   rollOnCheckpoint: true
-  maxFileSizeBytes: 134217728   # 128 MB
+  maxFileSizeBytes: 134217728     # 128 MB; 0 = unlimited
+  partitionBy: date               # optional: output/{date}/part-{taskId}
+  storage:
+    s3:
+      accessKey: ${AWS_ACCESS_KEY}
+      secretKey: ${AWS_SECRET_KEY}
+      region: ${AWS_REGION:eu-west-1}
+    adls:
+      accountName: ${ADLS_ACCOUNT}
+      accountKey: ${ADLS_KEY}
 ```
 
-**Key implementation points:**
-- `FileSink.forRowFormat(path, encoder)` for CSV/JSON
-- `FileSink.forBulkFormat(path, writer)` for Parquet (requires `flink-parquet`)
-- Rolling policy: by checkpoint (`OnCheckpointRollingPolicy`) or by file size
-- Output path templating: `{outputPath}/{jobName}/{date}/part-{taskId}`
+### Key implementation points
 
-**Acceptance tests:**
-- `sink_createsFile_withExpectedRows_forCsvFormat`
-- `sink_throwsIllegalArgument_whenOutputPathIsNull`
-- `sink_rollsFile_onCheckpoint`
+- `StoragePathResolver` (shared with 009-A) configures FS credentials from `storage` config
+- CSV/JSON: `FileSink.forRowFormat(path, SimpleStringEncoder)` with `Row.toString()`
+  or Jackson row-to-JSON encoder
+- Parquet: `FileSink.forBulkFormat(path, ParquetWriterFactory)` using
+  `AvroParquetWriters.forReflectRecord(...)` — schema derived from `TargetConfig.schema`
+- Rolling: `OnCheckpointRollingPolicy` when `rollOnCheckpoint=true`;
+  `DefaultRollingPolicy.withMaxPartSize(maxFileSizeBytes)` otherwise
+- Output path template: `{storagePath}/{partitionBy=value}/part-{taskIndex}-{checkpointId}`
+
+### Acceptance tests
+
+- `sink_writesCsvRows_toLocalPath`
+- `sink_writesJsonRows_toLocalPath`
+- `sink_writesParquetRows_toLocalPath`
+- `sink_throwsIllegalArgument_whenStoragePathIsNull`
+- `sink_rollsFile_onCheckpoint_whenRollOnCheckpointEnabled`
+- `sink_configuresAdlsCredentials_fromStorageConfig`
+- `sink_configuresS3Credentials_fromStorageConfig`
 
 ---
 
-### 010-C: API / REST Sink (`ApiTargetLayer`) — Hot zone extension
+## Feature 010-C — API / REST Sink (`ApiTargetLayer`) — Hot zone extension
 
-**What:** POST each output row as JSON to a REST endpoint.
-Implemented as an `AsyncDataStream` sink using `AsyncFunction` for throughput.
+### What
 
-**Classes to create:**
+POST each output row as JSON to a REST endpoint with retry, backoff, and DLQ routing.
+Supports all four auth mechanisms from `ApiAuthConfig` (shared with 009-C).
+
+### Classes to create
 
 | Class | Package | Role |
 |-------|---------|------|
 | `ApiTargetLayer` | `sink` | Implements `TargetLayer`; `getSinkType()` → `"API"` |
-| `HttpRowSinkFunction` | `sink` | `RichSinkFunction<Row>` with retry |
-| `ApiTargetLayerTest` | `sink` (test) | Mock HTTP, retry on 5xx, DLQ on 4xx |
+| `HttpRowSinkFunction` | `sink` | `RichSinkFunction<Row>` — serialises Row to JSON, POSTs, retries |
+| `ApiTargetLayerTest` | `sink` (test) | Happy path, retry on 5xx, DLQ on 4xx, each auth type |
 
-**Config YAML shape:**
+### `TargetConfig` additions
+
 ```yaml
 streaming.job.target:
   type: API
   url: https://api.example.com/ingest
   method: POST
-  headers:
-    Authorization: Bearer ${API_TOKEN}
+  batchSize: 1                        # 1 = per-record; >1 = batch JSON array POST
+  connectTimeoutMs: 5000
+  readTimeoutMs: 10000
   retryAttempts: 3
-  retryBackoffMs: 500
+  retryBackoffMs: 500                 # exponential: 500, 1000, 2000 ms
+  apiAuth:
+    type: BEARER
+    token: ${API_BEARER_TOKEN}
   dlq:
     enabled: true
     topic: api-sink-dlq
     bootstrapServers: kafka:29092
 ```
 
-**Acceptance tests:**
+### Acceptance tests
+
 - `sink_postsRow_asJson_toEndpoint`
-- `sink_retries_on5xxResponse`
-- `sink_routesToDlq_on4xxAfterRetries`
+- `sink_postsRowBatch_asJsonArray_whenBatchSizeGt1`
+- `sink_retries_on5xxResponse_withExponentialBackoff`
+- `sink_routesToDlq_on4xxAfterAllRetries`
+- `sink_authenticates_withBearer`
+- `sink_authenticates_withOauth2`
+- `sink_authenticates_withMtls`
+- `sink_authenticates_withApiKey`
 
 ---
 
-### 010 — Orchestrator / Controller changes
+## Feature 010 — Orchestrator / Controller changes
 
-`TargetLayer` already has `getSinkType()`. `StreamingJobOrchestrator` resolves
-by iterating injected `List<TargetLayer>` beans and matching `getSinkType()`:
+`TargetLayer` already has `getSinkType()`. Inject all `TargetLayer` beans as a list and resolve by type:
 
 ```java
+@Autowired
+public StreamingJobOrchestrator(List<TargetLayer> targetLayers, ...) {
+    this.targetLayerMap = targetLayers.stream()
+        .collect(Collectors.toMap(t -> t.getSinkType().toUpperCase(), t -> t));
+}
+
 TargetLayer resolveTargetLayer(TargetConfig config) {
-    return targetLayers.stream()
-        .filter(t -> t.getSinkType().equalsIgnoreCase(config.getType()))
-        .findFirst()
-        .orElseThrow(() -> new IllegalArgumentException(
-            "No TargetLayer for type: " + config.getType()));
+    String type = config.getType() == null ? "KAFKA" : config.getType().toUpperCase();
+    TargetLayer layer = targetLayerMap.get(type);
+    if (layer == null) throw new IllegalArgumentException("No TargetLayer for type: " + type);
+    return layer;
 }
 ```
 
-`JobController.validateJob()` must validate target config per sink type
-(JDBC URL, file path, API URL) before submission.
+`JobController.validateJob()` additions per sink type:
+- `JDBC`: `jdbcUrl` non-blank, `tableName` non-blank, upsert key present if `upsertMode=true`
+- `FILE`: `storagePath` non-blank, `fileFormat` in allowed set
+- `API`: `url` valid URI, `apiAuth.type` set, required auth fields present per type
 
 ---
 
-## Feature 011 — Schema Registry Integration
+## Feature 011 — Schema Registry Integration (SASL-secured)
 
-### Overview
+### What
 
-Replace inline JSON/Avro schema with Confluent Schema Registry lookup.
-Schema is fetched by subject (`<topic>-value`) and cached.
+Fetch Avro schema from a SASL-secured Confluent Schema Registry.
+`KafkaSourceLayer` checks `SchemaConfig.type: REGISTRY` and delegates to
+`CachedSchemaRegistryClient` instead of the inline path.
+
+### SASL mechanisms supported
+
+| Mechanism | Config |
+|-----------|--------|
+| `PLAIN` | `username` + `password` → `Authorization: Basic base64(user:pass)` |
+| `SCRAM-SHA-256` | `username` + `password` + `saslMechanism: SCRAM-SHA-256` |
+| `SCRAM-SHA-512` | `username` + `password` + `saslMechanism: SCRAM-SHA-512` |
+
+All mechanisms optionally combined with TLS (truststore for CA certificate).
 
 ### Classes to create
 
 | Class | Package | Role |
 |-------|---------|------|
-| `SchemaRegistryClient` | `source` | Fetches Avro schema from Registry REST API |
-| `CachedSchemaRegistryClient` | `source` | TTL-based in-memory cache wrapping `SchemaRegistryClient` |
-| `SchemaRegistryConfig` fields | `config.SourceConfig` | `registryUrl`, `subject`, `cacheTtlMs` |
-| `SchemaRegistryClientTest` | `source` (test) | Mock registry, 404 handling, cache eviction |
+| `SchemaRegistryClient` | `source` | HTTP client fetching schema by subject/version from registry REST API |
+| `CachedSchemaRegistryClient` | `source` | TTL cache wrapping `SchemaRegistryClient`; invalidates on 404 |
+| `SchemaRegistryConfig` | `config` | All registry fields (see YAML below) |
+| `SchemaRegistryClientTest` | `source` (test) | PLAIN auth, SCRAM auth, TLS, 404, cache TTL |
 
-### Config YAML shape
+### `SchemaConfig` additions
 
 ```yaml
 streaming.job.sources[0]:
-  type: KAFKA
-  topic: orders
   schemaDefinition:
-    type: REGISTRY             # INLINE (existing) | REGISTRY (new)
-    registryUrl: http://schema-registry:8081
-    subject: orders-value      # defaults to <topic>-value if omitted
-    cacheTtlMs: 300000         # 5 minutes
+    type: REGISTRY               # INLINE (existing) | REGISTRY (new)
+    registryUrl: https://schema-registry:8081
+    subject: orders-value        # defaults to <topic>-value if omitted
+    version: latest              # specific version number or 'latest'
+    cacheTtlMs: 300000           # 5 minutes
+    saslMechanism: PLAIN         # PLAIN | SCRAM-SHA-256 | SCRAM-SHA-512
+    username: ${SR_USERNAME}
+    password: ${SR_PASSWORD}
+    tls:
+      enabled: true
+      truststorePath: /app/certs/truststore.jks
+      truststorePassword: ${SR_TRUSTSTORE_PASSWORD}
+      skipHostnameVerification: false
 ```
 
 ### Key implementation points
 
-- `KafkaSourceLayer` checks `SchemaConfig.type`: `REGISTRY` → `CachedSchemaRegistryClient`,
-  `INLINE` → existing inline path (no regression)
-- Schema fetched once per source init, then cached
-- Cache invalidation: TTL expiry OR explicit `/api/schema/refresh/{jobName}` endpoint
-- Failed registry fetch → `DLQ_TAG` for that batch, not a hard failure
-- `SqlValidatorService` must also call registry when `type: REGISTRY` to validate SQL
+- PLAIN auth: `Authorization: Basic base64(username:password)` header on every request
+- SCRAM: implemented via custom `javax.security.auth.callback.CallbackHandler` wired into
+  `javax.security.sasl.Sasl.createSaslClient(...)` — produces `Authorization: SCRAM-SHA-256 ...`
+- TLS: `SSLContext` from truststore; `HttpsURLConnection.setDefaultSSLSocketFactory(...)` scoped
+  to the registry client instance (not global)
+- Cache invalidation: TTL expiry OR explicit `GET /api/schema/refresh/{jobName}` endpoint
+  (calls `CachedSchemaRegistryClient.invalidate(subject)`)
+- `SqlValidatorService`: when `SchemaConfig.type == REGISTRY`, calls
+  `CachedSchemaRegistryClient.fetchSchema(subject)` to build the `SourceEntry`
 
 ### Acceptance tests
 
-- `fetchSchema_returnsAvroSchema_forKnownSubject`
+- `fetchSchema_returnsAvroSchema_withPlainAuth`
+- `fetchSchema_returnsAvroSchema_withScramSha256Auth`
 - `fetchSchema_throwsSchemaException_forUnknownSubject`
+- `fetchSchema_throwsSchemaException_on401_wrongCredentials`
 - `cachedClient_returnsFromCache_onSecondCall`
 - `cachedClient_refreshes_afterTtlExpiry`
+- `cachedClient_invalidates_on404_subjectDeleted`
+- `tlsClient_rejectsUntrustedCertificate_whenSkipVerificationFalse`
 
 ---
 
 ## Feature 012 — Metrics & Observability
 
-### Overview
+### What
 
-Expose pipeline throughput, latency, error rate, and sink success/failure
-via Flink's built-in Metrics system, wired to Prometheus for Grafana dashboards.
+Wire Flink's built-in MetricGroup to a Prometheus reporter so all pipeline metrics
+are scraped and displayed in a pre-provisioned Grafana dashboard.
+Retention: 30-day TSDB storage, 15 s scrape interval.
 
-### Components
+### Components to create / modify
 
 | Component | Role |
 |-----------|------|
-| `FlinkMetricsConfig` | `prometheusPort`, `metricsEnabled` config fields |
-| `PrometheusReporter` config | Added to `flink-conf.yaml` / `FLINK_PROPERTIES` |
-| `MetricsService` | Spring bean wrapping Flink `MetricGroup` for app-level metrics |
-| `PipelineMetrics` | Constants for metric names (throughput, latency, errors) |
-| Grafana dashboard JSON | Pre-built dashboard for the 4 cross-cutting metrics |
+| `FlinkMetricsConfig` fields in `FlinkConfig` | `metricsEnabled`, `prometheusPort` |
+| `FLINK_PROPERTIES` in `docker-compose.yml` | Prometheus reporter config injected |
+| `monitoring/prometheus.yml` | Scrape targets + 30-day retention config |
+| `monitoring/grafana/provisioning/datasources/prometheus.yml` | Auto-provision datasource |
+| `monitoring/grafana/provisioning/dashboards/flink-pipeline.json` | Pre-built dashboard |
+| `PipelineMetrics` | Metric name constants (prevents typos across layers) |
 
-### Metrics to expose
+### `FLINK_PROPERTIES` additions
 
-| Metric | Type | Description |
-|--------|------|-------------|
-| `pipeline.source.records_read` | Counter | Records consumed per source per job |
-| `pipeline.source.records_rejected` | Counter | Schema-rejected records |
-| `pipeline.transform.records_out` | Counter | Records emitted after SQL transform |
-| `pipeline.sink.records_written` | Counter | Records accepted by sink |
-| `pipeline.sink.records_failed` | Counter | Records the sink rejected / errored |
-| `pipeline.latency.p50_ms` | Gauge | Median end-to-end event latency |
-| `pipeline.latency.p99_ms` | Gauge | 99th percentile latency |
-| `pipeline.dlq.records_routed` | Counter | Records sent to DLQ |
-| `pipeline.checkpoint.duration_ms` | Gauge | Last checkpoint duration |
+```
+metrics.reporter.prom.factory.class: org.apache.flink.metrics.prometheus.PrometheusReporterFactory
+metrics.reporter.prom.port: 9249
+metrics.reporter.prom.filterLabelValueCharacters: false
+metrics.latency.interval: 5000
+```
 
-### Config YAML shape
+### Metrics exposed
+
+| Metric | Flink type | Labels | Description |
+|--------|-----------|--------|-------------|
+| `flink_pipeline_source_records_read_total` | Counter | `job_name`, `source_table` | Records consumed per source |
+| `flink_pipeline_source_records_rejected_total` | Counter | `job_name`, `source_table` | Schema-rejected records |
+| `flink_pipeline_transform_records_out_total` | Counter | `job_name` | Records after SQL transform |
+| `flink_pipeline_sink_records_written_total` | Counter | `job_name`, `sink_type`, `sink_target` | Records accepted by sink |
+| `flink_pipeline_sink_records_failed_total` | Counter | `job_name`, `sink_type` | Sink errors |
+| `flink_pipeline_dlq_records_routed_total` | Counter | `job_name`, `source_table`, `error_type` | DLQ-routed records |
+| `flink_taskmanager_job_latency_source_id_operator_id_operator_subtask_index_latency` | Histogram | built-in | End-to-end latency |
+| `flink_taskmanager_job_task_operator_numRecordsInPerSecond` | Gauge | built-in | Throughput in |
+| `flink_taskmanager_job_task_operator_numRecordsOutPerSecond` | Gauge | built-in | Throughput out |
+
+### `prometheus.yml`
+
+```yaml
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: flink-jobmanager
+    static_configs:
+      - targets: ['jobmanager:9249']
+  - job_name: flink-taskmanager
+    static_configs:
+      - targets: ['taskmanager:9249']
+  - job_name: flink-app
+    static_configs:
+      - targets: ['flink-app:8082']
+        labels:
+          service: spring-app
+```
+
+### `docker-compose.yml` additions
+
+```yaml
+prometheus:
+  image: prom/prometheus:v2.51.0
+  container_name: prometheus
+  command:
+    - '--config.file=/etc/prometheus/prometheus.yml'
+    - '--storage.tsdb.path=/prometheus'
+    - '--storage.tsdb.retention.time=30d'
+    - '--web.enable-lifecycle'
+  volumes:
+    - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    - prometheus_data:/prometheus
+  ports:
+    - "9090:9090"
+
+grafana:
+  image: grafana/grafana:10.3.0
+  container_name: grafana
+  environment:
+    GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:admin}
+    GF_USERS_ALLOW_SIGN_UP: "false"
+  volumes:
+    - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+    - grafana_data:/var/lib/grafana
+  ports:
+    - "3000:3000"
+  depends_on:
+    - prometheus
+
+volumes:
+  prometheus_data:
+  grafana_data:
+```
+
+### Grafana dashboard panels (pre-provisioned)
+
+| Panel | Metric | Viz |
+|-------|--------|-----|
+| Records read / sec | `rate(flink_pipeline_source_records_read_total[1m])` | Time series |
+| Rejection rate % | `rate(rejected) / rate(read) * 100` | Time series |
+| Sink write / sec | `rate(flink_pipeline_sink_records_written_total[1m])` | Time series |
+| Sink failures | `rate(flink_pipeline_sink_records_failed_total[1m])` | Time series + alert |
+| DLQ routed / sec | `rate(flink_pipeline_dlq_records_routed_total[1m])` | Time series |
+| End-to-end latency p50/p99 | Flink latency histogram | Gauge |
+| Active jobs | `flink_jobmanager_numRunningJobs` | Stat |
+| Checkpoint duration | `flink_jobmanager_job_lastCheckpointDuration` | Gauge |
+
+### `application.yml` additions
 
 ```yaml
 streaming:
@@ -406,94 +695,61 @@ streaming:
       prometheus-port: ${PROMETHEUS_PORT:9249}
 ```
 
-**`docker-compose.yml` additions:**
-```yaml
-prometheus:
-  image: prom/prometheus:latest
-  volumes:
-    - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
-  ports:
-    - "9090:9090"
-
-grafana:
-  image: grafana/grafana:latest
-  ports:
-    - "3000:3000"
-  volumes:
-    - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards
-```
-
 ### Acceptance tests
 
-- `metricsService_incrementsSourceRead_onEachRecord`
-- `metricsService_incrementsSinkFailed_onSinkException`
-- `prometheusEndpoint_exposesAllPipelineMetrics`
+- `metricsConfig_enabledByDefault`
+- `pipelineMetrics_constants_matchPrometheusNamingConvention`
+- Integration: `prometheusEndpoint_exposesSourceReadCounter_afterRecordConsumed`
+
+---
+
+## New `pom.xml` Dependencies
+
+| Artifact | Version | Scope | Feature |
+|----------|---------|-------|---------|
+| `flink-connector-jdbc` | `3.1.2-1.17` | compile | 009-B, 010-A |
+| `postgresql` | `42.7.3` | runtime | 009-B, 010-A |
+| `mysql-connector-j` | `8.3.0` | runtime | 009-B, 010-A (MySQL) |
+| `flink-parquet` | `1.18.0` | compile | 009-A, 010-B |
+| `parquet-avro` | `1.13.1` | compile | 009-A, 010-B |
+| `hadoop-common` | `3.3.6` | provided | 009-A, 010-B (Parquet FS) |
+| `hadoop-azure` | `3.3.6` | compile | 009-A, 010-B (ADLS Gen2) |
+| `hadoop-aws` | `3.3.6` | compile | 009-A, 010-B (S3) |
+| `aws-java-sdk-s3` | `1.12.x` | compile | 009-A, 010-B |
+| `azure-identity` | `1.12.x` | compile | 009-A, 010-B (SP auth) |
+| `httpclient` | `4.5.14` | compile | 009-C, 010-C |
+| `jsonpath` (Jayway) | `2.9.0` | compile | 009-C |
+| `kafka-schema-registry-client` | `7.5.3` | compile | 011 |
+| `flink-metrics-prometheus` | `1.18.0` | compile | 012 |
 
 ---
 
 ## Implementation Order & Dependencies
 
 ```
-Feature 009-A (File source)   ─┐
-Feature 009-B (JDBC source)   ─┤── no external deps beyond flink-connector-jdbc
-Feature 009-C (API source)    ─┘
+Sprint 1: 009-A (File source) ──┐
+          010-A (JDBC sink)   ──┴── shared StoragePathResolver, flink-connector-jdbc
 
-Feature 010-A (JDBC sink)     ─── depends on flink-connector-jdbc (shared with 009-B)
-Feature 010-B (File sink)     ─── depends on flink-parquet (new dep for PARQUET format)
-Feature 010-C (API sink)      ─── no new deps
+Sprint 2: 009-B (JDBC source) ──┐
+          010-B (File sink)   ──┴── ADLS/S3 credentials reuse from Sprint 1
 
-Feature 011 (Schema Registry) ─── depends on confluent schema-registry-client (new dep)
+Sprint 3: 009-C (API source)  ──┐
+          010-C (API sink)    ──┴── shared ApiAuthConfig, HttpClientFactory, OAuthTokenManager
 
-Feature 012 (Metrics)         ─── depends on flink-metrics-prometheus (new dep)
-                                   best done after 009+010 to capture all metric points
+Sprint 4: 011 (Schema Registry)── depends on 009-C HttpClientFactory for mTLS to registry
+
+Sprint 5: 012 (Metrics)       ── wires metric points across all source/sink layers from 1-4
 ```
-
-**Recommended sequencing:**
-
-| Sprint | Features | Deliverable |
-|--------|----------|-------------|
-| 1 | 009-A (File source) + 010-A (JDBC sink) | Hard data layer: file→JDBC pipeline |
-| 2 | 009-B (JDBC source) + 010-B (File sink) | JDBC→file and JDBC→JDBC pipelines |
-| 3 | 009-C (API source) + 010-C (API sink) | API polling + REST push |
-| 4 | 011 (Schema Registry) | Enterprise Avro registry integration |
-| 5 | 012 (Metrics) | Full Prometheus/Grafana observability |
-
----
-
-## New `pom.xml` dependencies required
-
-| Artifact | Version | Feature |
-|----------|---------|---------|
-| `flink-connector-jdbc` | `3.1.2-1.17` | 009-B, 010-A |
-| `postgresql` driver | `42.7.x` | 009-B, 010-A |
-| `flink-parquet` | `1.18.0` | 010-B |
-| `hadoop-common` | `3.3.x` (provided) | 010-B (Parquet writer) |
-| `confluent schema-registry-client` | `7.5.x` | 011 |
-| `flink-metrics-prometheus` | `1.18.0` | 012 |
-| `jsonpath` (Jayway) | `2.9.x` | 009-C |
 
 ---
 
 ## TDD Coverage Targets (per WORK_AGREEMENT)
 
-Each new feature must reach:
-- **≥ 80%** unit-tested features (✅ in FEATURE_COVERAGE_MATRIX)
-- **≥ 1** integration test per new source/sink type
-- **0** features with 🚧 Stub status at PR merge
-
-New feature doc created in `src/docs/features/00X-<name>.md` before coding begins.
-FEATURE_COVERAGE_MATRIX.md updated at feature completion.
-
----
-
-## Open Questions (to resolve before Feature 009 coding)
-
-1. **File path base:** Local filesystem or ADLS Gen2 / S3?
-   — Determines if `azure-storage-datalake` dependency is needed.
-2. **JDBC sink upsert key:** Who provides the PK column list — config or schema?
-3. **API source auth:** Only Bearer token, or also mutual TLS / API key header?
-4. **Schema Registry auth:** Is the internal registry open or SASL-secured?
-5. **Metrics retention:** Prometheus scrape interval and data retention window?
+- **≥ 80%** features ✅ unit-tested at PR merge
+- **≥ 1** integration test per new source/sink type pair
+- **0** features at 🚧 Stub status at PR merge
+- Feature doc `src/docs/features/00X-<name>.md` created **before** coding begins
+- `FEATURE_COVERAGE_MATRIX.md` updated at feature completion
 
 ---
 
