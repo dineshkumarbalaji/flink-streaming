@@ -8,6 +8,7 @@ import com.datahondo.flink.streaming.config.AuditConfig;
 import com.datahondo.flink.streaming.config.FlinkConfig;
 import com.datahondo.flink.streaming.config.StreamingJobConfig;
 import com.datahondo.flink.streaming.savepoint.SavepointService;
+import java.util.Collections;
 import com.datahondo.flink.streaming.source.SourceLayer;
 import com.datahondo.flink.streaming.sink.TargetLayer;
 import com.datahondo.flink.streaming.transformation.TransformationLayer;
@@ -48,7 +49,9 @@ class StreamingJobOrchestratorAuditTest {
     @BeforeEach
     void setUp() {
         orchestrator = new StreamingJobOrchestrator(
-                sourceLayer, transformationLayer, targetLayer,
+                Collections.singletonList(sourceLayer),
+                transformationLayer,
+                Collections.singletonList(targetLayer),
                 auditService, reconciliationService, savepointService);
     }
 

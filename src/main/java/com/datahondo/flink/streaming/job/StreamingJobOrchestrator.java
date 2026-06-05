@@ -13,7 +13,6 @@ import com.datahondo.flink.streaming.savepoint.SavepointService;
 import com.datahondo.flink.streaming.source.SourceLayer;
 import com.datahondo.flink.streaming.sink.TargetLayer;
 import com.datahondo.flink.streaming.transformation.TransformationLayer;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.execution.JobClient;
@@ -21,6 +20,7 @@ import org.apache.flink.runtime.state.hashmap.HashMapStateBackend;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.table.api.Table;
 import org.apache.flink.table.api.bridge.java.StreamTableEnvironment;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
@@ -31,6 +31,7 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.stream.Collectors;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
@@ -52,15 +53,63 @@ import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
  */
 @Slf4j
 @Service
-@RequiredArgsConstructor
 public class StreamingJobOrchestrator {
 
-    private final SourceLayer sourceLayer;
+    private final Map<String, SourceLayer> sourceLayers;
     private final TransformationLayer transformationLayer;
-    private final TargetLayer targetLayer;
+    private final Map<String, TargetLayer> targetLayers;
     private final AuditService auditService;
     private final ReconciliationService reconciliationService;
     private final SavepointService savepointService;
+
+    @Autowired
+    public StreamingJobOrchestrator(List<SourceLayer> sourceLayerList,
+                                    TransformationLayer transformationLayer,
+                                    List<TargetLayer> targetLayerList,
+                                    AuditService auditService,
+                                    ReconciliationService reconciliationService,
+                                    SavepointService savepointService) {
+        this.sourceLayers = sourceLayerList.stream()
+                .collect(Collectors.toMap(
+                        s -> s.getSourceType().toUpperCase(),
+                        s -> s,
+                        (a, b) -> a));
+        this.transformationLayer = transformationLayer;
+        this.targetLayers = targetLayerList.stream()
+                .collect(Collectors.toMap(
+                        t -> t.getSinkType().toUpperCase(),
+                        t -> t,
+                        (a, b) -> a));
+        this.auditService = auditService;
+        this.reconciliationService = reconciliationService;
+        this.savepointService = savepointService;
+        log.info("Orchestrator registered source types: {}", this.sourceLayers.keySet());
+        log.info("Orchestrator registered sink types: {}", this.targetLayers.keySet());
+    }
+
+    private SourceLayer resolveSourceLayer(SourceConfig sourceConfig) {
+        String type = sourceConfig.getType() == null ? "KAFKA"
+                : sourceConfig.getType().toUpperCase();
+        SourceLayer layer = sourceLayers.get(type);
+        if (layer == null) {
+            throw new IllegalArgumentException(
+                    "No SourceLayer registered for type: " + type
+                    + ". Available: " + sourceLayers.keySet());
+        }
+        return layer;
+    }
+
+    private TargetLayer resolveTargetLayer(com.datahondo.flink.streaming.config.TargetConfig targetConfig) {
+        String type = targetConfig.getType() == null ? "KAFKA"
+                : targetConfig.getType().toUpperCase();
+        TargetLayer layer = targetLayers.get(type);
+        if (layer == null) {
+            throw new IllegalArgumentException(
+                    "No TargetLayer registered for type: " + type
+                    + ". Available: " + targetLayers.keySet());
+        }
+        return layer;
+    }
 
     /** In-flight jobs: jobName → (JobClient, RunContext, windowStart). */
     private final Map<String, JobClient>  runningJobs    = new ConcurrentHashMap<>();
@@ -128,7 +177,7 @@ public class StreamingJobOrchestrator {
             log.info("=== Layer 1: Source Layer ===");
             if (config.getSources() != null) {
                 for (SourceConfig sourceConfig : config.getSources()) {
-                    sourceLayer.createSourceTable(env, tableEnv, sourceConfig);
+                    resolveSourceLayer(sourceConfig).createSourceTable(env, tableEnv, sourceConfig);
                 }
             }
 
@@ -139,7 +188,7 @@ public class StreamingJobOrchestrator {
 
             // ── 7. Layer 3: Target ────────────────────────────────────────────
             log.info("=== Layer 3: Target Layer ===");
-            targetLayer.sink(tableEnv, transformedTable, config.getTarget());
+            resolveTargetLayer(config.getTarget()).sink(tableEnv, transformedTable, config.getTarget());
 
             // ── 8. Submit async ───────────────────────────────────────────────
             log.info("Submitting Flink job async...");

@@ -1,0 +1,22 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: flink-jobmanager
+    static_configs:
+      - targets: ['jobmanager:9249']
+        labels:
+          component: jobmanager
+
+  - job_name: flink-taskmanager
+    static_configs:
+      - targets: ['taskmanager:9249']
+        labels:
+          component: taskmanager
+
+  - job_name: flink-app
+    static_configs:
+      - targets: ['flink-app:8082']
+        labels:
+          service: spring-app
